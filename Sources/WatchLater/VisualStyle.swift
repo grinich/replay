@@ -82,6 +82,7 @@ struct WindowStyleConfigurator: NSViewRepresentable {
     let title: String
 
     final class Coordinator {
+        private let trafficLightVerticalOffset: CGFloat = 8
         weak var alignedWindow: NSWindow?
         let activationClickShield = ForegroundActivationClickShield()
 
@@ -100,7 +101,7 @@ struct WindowStyleConfigurator: NSViewRepresentable {
             ] {
                 guard let button = window.standardWindowButton(buttonType) else { continue }
                 var frame = button.frame
-                frame.origin.y -= 5
+                frame.origin.y -= trafficLightVerticalOffset
                 button.setFrameOrigin(frame.origin)
             }
         }
