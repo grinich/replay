@@ -119,12 +119,10 @@ struct ContentView: View {
                 )
                 .padding(.leading, 82)
                 .padding(.trailing, 54)
-                // NavigationSplitView gives its sidebar an additional title-bar
-                // inset. Compensate for it so this separator lands on the same
-                // baseline as the video and chapter headers, while keeping the
-                // field centered beside the native traffic-light controls.
+                // NavigationSplitView supplies the native title-bar inset. Keep
+                // the add field in the unshifted center of that header so it
+                // shares a baseline with the traffic-light cluster.
                 .frame(height: 46)
-                .offset(y: -5)
 
                 Divider()
 
@@ -1129,6 +1127,8 @@ private struct PlaybackControls: View {
         ViewThatFits(in: .horizontal) {
             controlRow(showRemainingTime: true, spacing: 10)
             controlRow(showRemainingTime: false, spacing: 6)
+            compactControlLayout
+            narrowControlLayout
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -1141,49 +1141,55 @@ private struct PlaybackControls: View {
 
     private func controlRow(showRemainingTime: Bool, spacing: CGFloat) -> some View {
         HStack(spacing: spacing) {
-            WatchGlassContainer(spacing: 4) {
-                HStack(spacing: 3) {
-                    PlayerControlButton(
-                        systemImage: snapshot.isPlaying ? "pause.fill" : "play.fill",
-                        help: snapshot.isPlaying ? "Pause (Space)" : "Play (Space)",
-                        isPrimary: true,
-                        action: togglePlayback
-                    )
-                    PlayerControlButton(systemImage: "gobackward.10", help: "Back 10 seconds (Left Arrow)") {
-                        skip(-10)
-                    }
-                    PlayerControlButton(systemImage: "goforward.10", help: "Forward 10 seconds (Right Arrow)") {
-                        skip(10)
-                    }
+            transportControls
+            timeline(showRemainingTime: showRemainingTime)
+            utilityControls
+        }
+    }
+
+    private var compactControlLayout: some View {
+        VStack(spacing: 2) {
+            timeline(showRemainingTime: false)
+
+            HStack(spacing: 6) {
+                transportControls
+                Spacer(minLength: 4)
+                utilityControls
+            }
+        }
+    }
+
+    private var narrowControlLayout: some View {
+        VStack(spacing: 4) {
+            timeline(showRemainingTime: false)
+            transportControls
+            utilityControls
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var transportControls: some View {
+        WatchGlassContainer(spacing: 4) {
+            HStack(spacing: 3) {
+                PlayerControlButton(
+                    systemImage: snapshot.isPlaying ? "pause.fill" : "play.fill",
+                    help: snapshot.isPlaying ? "Pause (Space)" : "Play (Space)",
+                    isPrimary: true,
+                    action: togglePlayback
+                )
+                PlayerControlButton(systemImage: "gobackward.10", help: "Back 10 seconds (Left Arrow)") {
+                    skip(-10)
+                }
+                PlayerControlButton(systemImage: "goforward.10", help: "Forward 10 seconds (Right Arrow)") {
+                    skip(10)
                 }
             }
+        }
+        .fixedSize()
+    }
 
-            Text(formatTime(displayTime))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 46, alignment: .trailing)
-
-            ChapterScrubber(
-                value: min(displayTime, effectiveDuration),
-                duration: effectiveDuration,
-                chapters: chapters,
-                scrubChanged: { scrubTime = $0 },
-                scrubEnded: { time in
-                    seek(time)
-                    scrubTime = nil
-                }
-            )
-            .frame(minWidth: 90, maxWidth: .infinity)
-            .frame(height: 44)
-            .disabled(effectiveDuration <= 0)
-
-            if showRemainingTime {
-                Text("−\(formatTime(max(0, effectiveDuration - displayTime)))")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(minWidth: 48, alignment: .leading)
-            }
-
+    private var utilityControls: some View {
+        HStack(spacing: 6) {
             PlaybackSpeedMenu(
                 playbackRate: snapshot.playbackRate,
                 select: setPlaybackRate
@@ -1215,6 +1221,39 @@ private struct PlaybackControls: View {
                 action: toggleMute
             )
         }
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private func timeline(showRemainingTime: Bool) -> some View {
+        HStack(spacing: 6) {
+            Text(formatTime(displayTime))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 46, alignment: .trailing)
+
+            ChapterScrubber(
+                value: min(displayTime, effectiveDuration),
+                duration: effectiveDuration,
+                chapters: chapters,
+                scrubChanged: { scrubTime = $0 },
+                scrubEnded: { time in
+                    seek(time)
+                    scrubTime = nil
+                }
+            )
+            .frame(minWidth: 80, maxWidth: .infinity)
+            .frame(height: 44)
+            .disabled(effectiveDuration <= 0)
+
+            if showRemainingTime {
+                Text("−\(formatTime(max(0, effectiveDuration - displayTime)))")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 48, alignment: .leading)
+            }
+        }
+        .frame(minWidth: 0, maxWidth: .infinity)
     }
 
     private var effectiveDuration: Double {

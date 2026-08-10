@@ -81,17 +81,45 @@ struct WatchGlassContainer<Content: View>: View {
 struct WindowStyleConfigurator: NSViewRepresentable {
     let title: String
 
+    final class Coordinator {
+        weak var alignedWindow: NSWindow?
+
+        func centerTrafficLights(in window: NSWindow) {
+            guard alignedWindow !== window else { return }
+            alignedWindow = window
+
+            // The app extends its 56-point pane headers through the native
+            // title-bar region. AppKit positions the traffic lights for its
+            // shorter default title bar, so lower the cluster to the visual
+            // center shared by the URL field and the adjacent pane headers.
+            for buttonType in [
+                NSWindow.ButtonType.closeButton,
+                .miniaturizeButton,
+                .zoomButton
+            ] {
+                guard let button = window.standardWindowButton(buttonType) else { continue }
+                var frame = button.frame
+                frame.origin.y -= 5
+                button.setFrameOrigin(frame.origin)
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        DispatchQueue.main.async { configure(view.window) }
+        DispatchQueue.main.async { configure(view.window, coordinator: context.coordinator) }
         return view
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        DispatchQueue.main.async { configure(view.window) }
+        DispatchQueue.main.async { configure(view.window, coordinator: context.coordinator) }
     }
 
-    private func configure(_ window: NSWindow?) {
+    private func configure(_ window: NSWindow?, coordinator: Coordinator) {
         guard let window else { return }
         window.title = title
         window.titleVisibility = .hidden
@@ -105,6 +133,7 @@ struct WindowStyleConfigurator: NSViewRepresentable {
         // consume their mouse-down events before Button and Menu receive them.
         // The standard title bar remains available for moving the window.
         window.isMovableByWindowBackground = false
+        coordinator.centerTrafficLights(in: window)
         let minimumSize = NSSize(width: 980, height: 640)
         window.minSize = minimumSize
 
