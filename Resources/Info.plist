@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Web Location</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>webloc</string>
+        <string>url</string>
+      </array>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>com.apple.web-internet-location</string>
+        <string>public.url</string>
+        <string>public.file-url</string>
+      </array>
+    </dict>
+  </array>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>CFBundleURLName</key>
+      <string>com.mg.watchlater.web</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>http</string>
+        <string>https</string>
+      </array>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+    </dict>
+  </array>
+  <key>CFBundleExecutable</key>
+  <string>WatchLater</string>
+  <key>CFBundleIconFile</key>
+  <string>WatchLater</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.mg.watchlater</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Watch Later</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.2.0</string>
+  <key>CFBundleVersion</key>
+  <string>2</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+</dict>
+</plist>
