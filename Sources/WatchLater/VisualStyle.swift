@@ -83,7 +83,10 @@ struct WindowStyleConfigurator: NSViewRepresentable {
 
     final class Coordinator {
         private let trafficLightVerticalOffset: CGFloat = 8
+        private let sidebarToggleVerticalOffset: CGFloat = 3
         weak var alignedWindow: NSWindow?
+        weak var alignedSidebarToggleView: NSView?
+        var sidebarToggleOriginalY: CGFloat?
         let activationClickShield = ForegroundActivationClickShield()
 
         func centerTrafficLights(in window: NSWindow) {
@@ -103,6 +106,32 @@ struct WindowStyleConfigurator: NSViewRepresentable {
                 var frame = button.frame
                 frame.origin.y -= trafficLightVerticalOffset
                 button.setFrameOrigin(frame.origin)
+            }
+        }
+
+        func alignSidebarToggle(in window: NSWindow) {
+            guard let item = window.toolbar?.items.first(where: {
+                $0.itemIdentifier == .toggleSidebar
+            }),
+                  let itemView = item.view else { return }
+
+            if alignedSidebarToggleView !== itemView {
+                alignedSidebarToggleView = itemView
+                sidebarToggleOriginalY = itemView.frame.origin.y
+            }
+            guard let originalY = sidebarToggleOriginalY else { return }
+            var frame = itemView.frame
+            frame.origin.y = originalY - sidebarToggleVerticalOffset
+            guard itemView.frame.origin.y != frame.origin.y else { return }
+            itemView.setFrameOrigin(frame.origin)
+        }
+
+        func scheduleSidebarToggleAlignment(in window: NSWindow) {
+            for delay in [0.0, 0.05, 0.15, 0.3] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak window] in
+                    guard let self, let window else { return }
+                    self.alignSidebarToggle(in: window)
+                }
             }
         }
     }
@@ -140,6 +169,7 @@ struct WindowStyleConfigurator: NSViewRepresentable {
         // The standard title bar remains available for moving the window.
         window.isMovableByWindowBackground = false
         coordinator.centerTrafficLights(in: window)
+        coordinator.scheduleSidebarToggleAlignment(in: window)
         coordinator.activationClickShield.attach(to: window)
         let minimumSize = NSSize(width: 980, height: 640)
         window.minSize = minimumSize
