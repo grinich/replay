@@ -354,6 +354,19 @@ enum PlaybackRatePreference {
     }
 }
 
+enum PlaybackAudioPolicy {
+    // Watch Later is primarily speech, and AVFoundation documents time-domain
+    // processing as the lower-cost voice algorithm. Unlike the spectral music
+    // processor, it can follow interactive rate changes without rebuilding a
+    // large analysis window and creating an audible hole.
+    static let timePitchAlgorithm: AVAudioTimePitchAlgorithm = .timeDomain
+
+    // Every playable asset is already on disk. Waiting for AVPlayer's network
+    // stall predictor after a rate change only adds latency and cannot improve
+    // buffering for these local files.
+    static let waitsToMinimizeStalling = false
+}
+
 enum PlaybackVolumePreference {
     private static let key = "playbackVolume"
 
@@ -656,11 +669,12 @@ struct LocalVideoPlayer: NSViewRepresentable {
             reachedEnd = false
             lastSeekRequestID = nil
             preferredRate = PlaybackRatePreference.load()
-            let player = AVPlayer(url: url)
+            let playerItem = AVPlayerItem(url: url)
+            playerItem.audioTimePitchAlgorithm = PlaybackAudioPolicy.timePitchAlgorithm
+            let player = AVPlayer(playerItem: playerItem)
             player.allowsExternalPlayback = true
-            player.defaultRate = Float(preferredRate)
+            player.automaticallyWaitsToMinimizeStalling = PlaybackAudioPolicy.waitsToMinimizeStalling
             player.volume = Float(PlaybackVolumePreference.load())
-            player.currentItem?.audioTimePitchAlgorithm = .spectral
             self.player = player
             playerView = view
             view.playerLayer.player = player
@@ -806,12 +820,10 @@ struct LocalVideoPlayer: NSViewRepresentable {
             PlaybackRatePreference.save(preferredRate)
             if let player {
                 let shouldKeepPlaying = player.timeControlStatus != .paused
-                player.defaultRate = Float(preferredRate)
                 if shouldKeepPlaying {
-                    // Updating `rate` keeps the active playback clock running.
-                    // Reissuing playImmediately(atRate:) for every key press can
-                    // briefly restart AVPlayer's playback pipeline and feel like
-                    // a pause, especially during key repeat.
+                    // `rate` is AVFoundation's instantaneous clock adjustment.
+                    // Do not call play, pause, seek, or preroll here: each can
+                    // restart part of the media pipeline and create an audio gap.
                     player.rate = Float(preferredRate)
                 }
             }

@@ -13,6 +13,8 @@ struct PlaybackCommandCheck {
         precondition(PlaybackRatePolicy.supportedRates.first == 1)
         precondition(PlaybackRatePolicy.supportedRates.last == 2.5)
         precondition(PlaybackRatePolicy.supportedRates.count == 16)
+        precondition(PlaybackAudioPolicy.timePitchAlgorithm == .timeDomain)
+        precondition(!PlaybackAudioPolicy.waitsToMinimizeStalling)
         precondition(PlayerVolumeScrollPolicy.adjustment(
             deltaX: 0,
             deltaY: 10,
