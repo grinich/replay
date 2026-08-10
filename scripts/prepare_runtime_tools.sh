@@ -19,7 +19,19 @@ download() {
     local url="$1"
     local destination="$2"
     if [[ ! -f "$destination" ]]; then
-        curl --fail --location --retry 3 --retry-delay 2 "$url" --output "$destination"
+        local partial="$destination.partial"
+        rm -f "$partial"
+        curl \
+            --fail \
+            --location \
+            --retry 8 \
+            --retry-all-errors \
+            --retry-delay 2 \
+            --connect-timeout 30 \
+            --max-time 600 \
+            "$url" \
+            --output "$partial"
+        mv "$partial" "$destination"
     fi
 }
 
