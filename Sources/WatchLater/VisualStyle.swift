@@ -83,6 +83,7 @@ struct WindowStyleConfigurator: NSViewRepresentable {
 
     final class Coordinator {
         weak var alignedWindow: NSWindow?
+        let activationClickShield = ForegroundActivationClickShield()
 
         func centerTrafficLights(in window: NSWindow) {
             guard alignedWindow !== window else { return }
@@ -119,6 +120,10 @@ struct WindowStyleConfigurator: NSViewRepresentable {
         DispatchQueue.main.async { configure(view.window, coordinator: context.coordinator) }
     }
 
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        coordinator.activationClickShield.detach()
+    }
+
     private func configure(_ window: NSWindow?, coordinator: Coordinator) {
         guard let window else { return }
         window.title = title
@@ -134,6 +139,7 @@ struct WindowStyleConfigurator: NSViewRepresentable {
         // The standard title bar remains available for moving the window.
         window.isMovableByWindowBackground = false
         coordinator.centerTrafficLights(in: window)
+        coordinator.activationClickShield.attach(to: window)
         let minimumSize = NSSize(width: 980, height: 640)
         window.minSize = minimumSize
 
@@ -149,6 +155,120 @@ struct WindowStyleConfigurator: NSViewRepresentable {
             frame.size.width = max(frame.width, minimumSize.width)
             frame.size.height = repairedHeight
             window.setFrame(frame, display: true, animate: false)
+        }
+    }
+}
+
+/// SwiftUI controls in a full-size title bar can accept the same mouse-down
+/// event that activates an inactive window. Keep a transparent shield above
+/// the whole window while the app is in the background so that first click is
+/// activation-only; later clicks pass through normally once the app is active.
+final class ForegroundActivationClickShield: NSView {
+    private weak var protectedWindow: NSWindow?
+    private var activationObservers: [NSObjectProtocol] = []
+    private(set) var isArmed = false
+
+    func attach(to window: NSWindow) {
+        guard protectedWindow !== window || superview == nil else { return }
+        detach()
+        guard let windowFrameView = window.contentView?.superview else { return }
+
+        protectedWindow = window
+        frame = windowFrameView.bounds
+        autoresizingMask = [.width, .height]
+        windowFrameView.addSubview(self, positioned: .above, relativeTo: nil)
+
+        activationObservers = [
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification,
+                object: NSApp,
+                queue: .main
+            ) { [weak self] _ in
+                self?.arm()
+            },
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: NSApp,
+                queue: .main
+            ) { [weak self] _ in
+                // A click that activates the app is still being dispatched
+                // when this notification arrives. Keep the shield armed until
+                // the next main-loop turn so that click cannot reach a control.
+                DispatchQueue.main.async {
+                    self?.disarm()
+                }
+            }
+        ]
+
+        if NSApp.isActive {
+            disarm()
+        } else {
+            arm()
+        }
+    }
+
+    func detach() {
+        for observer in activationObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        activationObservers.removeAll()
+        isArmed = false
+        protectedWindow = nil
+        removeFromSuperview()
+    }
+
+    func arm() {
+        isArmed = true
+        // Title-bar controls are hosted in sibling overlays. Reinsert the
+        // shield whenever the app resigns active so it remains above them too.
+        guard let container = superview else { return }
+        removeFromSuperview()
+        container.addSubview(self, positioned: .above, relativeTo: nil)
+    }
+
+    func disarm() {
+        isArmed = false
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        isArmed ? self : nil
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        activateWithoutForwardingClick()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        activateWithoutForwardingClick()
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        activateWithoutForwardingClick()
+    }
+
+    override func mouseDragged(with event: NSEvent) {}
+    override func rightMouseDragged(with event: NSEvent) {}
+    override func otherMouseDragged(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {}
+    override func rightMouseUp(with event: NSEvent) {}
+    override func otherMouseUp(with event: NSEvent) {}
+
+    private func activateWithoutForwardingClick() {
+        guard isArmed else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        protectedWindow?.makeKeyAndOrderFront(nil)
+        DispatchQueue.main.async { [weak self] in
+            self?.disarm()
+        }
+    }
+
+    deinit {
+        for observer in activationObservers {
+            NotificationCenter.default.removeObserver(observer)
         }
     }
 }

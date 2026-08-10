@@ -36,3 +36,7 @@ compile_and_run power_mode \
 compile_and_run playback_command \
     "$project_dir/Sources/WatchLater/LocalVideoPlayer.swift" \
     "$project_dir/tools/playback_command_check.swift"
+
+compile_and_run activation_click \
+    "$project_dir/Sources/WatchLater/VisualStyle.swift" \
+    "$project_dir/tools/activation_click_check.swift"

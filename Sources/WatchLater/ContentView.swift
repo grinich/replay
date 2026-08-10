@@ -1007,7 +1007,7 @@ private struct VideoDetail: View {
     }
 
     private func seekToChapter(_ chapter: VideoChapter) {
-        seekRequest = PlayerSeekRequest(time: chapter.startTime)
+        seekRequest = PlayerSeekRequest(time: chapter.startTime, shouldPlay: playback.isPlaying)
         store.updatePlaybackPosition(chapter.startTime, for: item.id)
     }
 

@@ -178,7 +178,7 @@ enum PlayerVolumeScrollPolicy {
 struct PlayerSeekRequest: Equatable {
     let id = UUID()
     let time: Double
-    var shouldPlay = true
+    let shouldPlay: Bool
 }
 
 struct PlaybackSnapshot: Equatable {

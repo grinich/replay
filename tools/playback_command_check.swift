@@ -15,6 +15,10 @@ struct PlaybackCommandCheck {
         precondition(PlaybackRatePolicy.supportedRates.count == 16)
         precondition(PlaybackAudioPolicy.timePitchAlgorithm == .timeDomain)
         precondition(!PlaybackAudioPolicy.waitsToMinimizeStalling)
+        let pausedChapterSeek = PlayerSeekRequest(time: 60, shouldPlay: false)
+        let playingChapterSeek = PlayerSeekRequest(time: 120, shouldPlay: true)
+        precondition(!pausedChapterSeek.shouldPlay)
+        precondition(playingChapterSeek.shouldPlay)
         precondition(PlayerVolumeScrollPolicy.adjustment(
             deltaX: 0,
             deltaY: 10,
