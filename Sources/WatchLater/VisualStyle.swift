@@ -83,10 +83,8 @@ struct WindowStyleConfigurator: NSViewRepresentable {
 
     final class Coordinator {
         private let trafficLightVerticalOffset: CGFloat = 8
-        private let sidebarToggleVerticalOffset: CGFloat = 3
+        private let sidebarToggleVerticalOffset: CGFloat = 4
         weak var alignedWindow: NSWindow?
-        weak var alignedSidebarToggleView: NSView?
-        var sidebarToggleOriginalY: CGFloat?
         let activationClickShield = ForegroundActivationClickShield()
 
         func centerTrafficLights(in window: NSWindow) {
@@ -110,24 +108,41 @@ struct WindowStyleConfigurator: NSViewRepresentable {
         }
 
         func alignSidebarToggle(in window: NSWindow) {
-            guard let item = window.toolbar?.items.first(where: {
-                $0.itemIdentifier == .toggleSidebar
-            }),
-                  let itemView = item.view else { return }
+            // NavigationSplitView's native toggle is rendered by a private
+            // SwiftUI toolbar host while NSToolbarItem.view remains nil. Move
+            // that host through its existing center-Y constraint so AppKit's
+            // later layout passes preserve both the visual and hit target.
+            guard let root = window.contentView?.superview,
+                  let itemView = sidebarToggleHostingView(in: root),
+                  let container = itemView.superview,
+                  let centerYConstraint = container.constraints.first(where: {
+                      ($0.firstItem as AnyObject?) === itemView &&
+                      $0.firstAttribute == .centerY &&
+                      ($0.secondItem as AnyObject?) === container &&
+                      $0.secondAttribute == .centerY
+                  }) else { return }
 
-            if alignedSidebarToggleView !== itemView {
-                alignedSidebarToggleView = itemView
-                sidebarToggleOriginalY = itemView.frame.origin.y
+            let alignedConstant = sidebarToggleVerticalOffset
+            guard centerYConstraint.constant != alignedConstant else { return }
+            centerYConstraint.constant = alignedConstant
+            container.layoutSubtreeIfNeeded()
+        }
+
+        private func sidebarToggleHostingView(in view: NSView) -> NSView? {
+            if view.className.contains("ToolbarItemHostingView"),
+               view.superview?.className == "NSToolbarItemViewer" {
+                return view
             }
-            guard let originalY = sidebarToggleOriginalY else { return }
-            var frame = itemView.frame
-            frame.origin.y = originalY - sidebarToggleVerticalOffset
-            guard itemView.frame.origin.y != frame.origin.y else { return }
-            itemView.setFrameOrigin(frame.origin)
+            for subview in view.subviews {
+                if let match = sidebarToggleHostingView(in: subview) {
+                    return match
+                }
+            }
+            return nil
         }
 
         func scheduleSidebarToggleAlignment(in window: NSWindow) {
-            for delay in [0.0, 0.05, 0.15, 0.3] {
+            for delay in [0.0, 0.05, 0.15, 0.3, 0.75, 1.5] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak window] in
                     guard let self, let window else { return }
                     self.alignSidebarToggle(in: window)
