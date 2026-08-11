@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @main
-struct RewatchApp: App {
+struct ReplayApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = QueueStore()
 

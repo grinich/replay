@@ -22,7 +22,7 @@ struct ContentView: View {
             sidebar
                 .navigationSplitViewColumnWidth(min: 272, ideal: 312, max: 360)
                 .simultaneousGesture(
-                    SpatialTapGesture(coordinateSpace: .named("rewatch-window"))
+                    SpatialTapGesture(coordinateSpace: .named("replay-window"))
                         .onEnded(handleWindowTap)
                 )
         } detail: {
@@ -33,11 +33,11 @@ struct ContentView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 980, minHeight: 640)
-        .coordinateSpace(name: "rewatch-window")
+        .coordinateSpace(name: "replay-window")
         .onPreferenceChange(URLBarFramePreferenceKey.self) { urlBarFrame = $0 }
         .background {
             ZStack {
-                WindowStyleConfigurator(title: store.selectedItem?.title ?? "Rewatch")
+                WindowStyleConfigurator(title: store.selectedItem?.title ?? "Replay")
                     .frame(width: 0, height: 0)
 
                 WindowWidthReader { width in
@@ -1811,7 +1811,7 @@ private struct DropAndAddBar: View {
             GeometryReader { geometry in
                 Color.clear.preference(
                     key: URLBarFramePreferenceKey.self,
-                    value: geometry.frame(in: .named("rewatch-window"))
+                    value: geometry.frame(in: .named("replay-window"))
                 )
             }
         }
@@ -1844,7 +1844,7 @@ private struct EmptyLibraryView: View {
                     )
                 Text(isDropTarget ? "Drop to save for later" : "Ready when you are")
                     .font(.title2.weight(.semibold))
-                Text("Copy a video link and press ⌘V. Rewatch downloads a clean offline copy and remembers your place.")
+                Text("Copy a video link and press ⌘V. Replay downloads a clean offline copy and remembers your place.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

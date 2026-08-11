@@ -4,7 +4,7 @@ import Network
 @MainActor
 final class NetworkMonitor {
     private let monitor = NWPathMonitor()
-    private let queue = DispatchQueue(label: "com.mg.rewatch.network-monitor")
+    private let queue = DispatchQueue(label: "com.mg.replay.network-monitor")
     private var isStarted = false
 
     private(set) var isOnline = false

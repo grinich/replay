@@ -2,31 +2,31 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
-app_dir="$project_dir/dist/Rewatch.app"
+app_dir="$project_dir/dist/Replay.app"
 contents_dir="$app_dir/Contents"
 resources_dir="$contents_dir/Resources"
 macos_dir="$contents_dir/MacOS"
-iconset_dir="$project_dir/.build/Rewatch.iconset"
-bundled_tools_dir="${REWATCH_BUNDLED_TOOLS_DIR:-}"
+iconset_dir="$project_dir/.build/Replay.iconset"
+bundled_tools_dir="${REPLAY_BUNDLED_TOOLS_DIR:-}"
 
-if [[ "${REWATCH_UNIVERSAL:-0}" == "1" ]]; then
+if [[ "${REPLAY_UNIVERSAL:-0}" == "1" ]]; then
     arm_build="$project_dir/.build/release-arm64"
     intel_build="$project_dir/.build/release-x86_64"
-    swift build --package-path "$project_dir" --scratch-path "$arm_build" -c release --arch arm64 --product Rewatch
-    swift build --package-path "$project_dir" --scratch-path "$intel_build" -c release --arch x86_64 --product Rewatch
-    arm_binary="$arm_build/arm64-apple-macosx/release/Rewatch"
-    intel_binary="$intel_build/x86_64-apple-macosx/release/Rewatch"
+    swift build --package-path "$project_dir" --scratch-path "$arm_build" -c release --arch arm64 --product Replay
+    swift build --package-path "$project_dir" --scratch-path "$intel_build" -c release --arch x86_64 --product Replay
+    arm_binary="$arm_build/arm64-apple-macosx/release/Replay"
+    intel_binary="$intel_build/x86_64-apple-macosx/release/Replay"
 else
-    swift build --package-path "$project_dir" -c release --product Rewatch
+    swift build --package-path "$project_dir" -c release --product Replay
     bin_dir=$(swift build --package-path "$project_dir" -c release --show-bin-path)
 fi
 
 rm -rf "$app_dir"
 mkdir -p "$macos_dir" "$resources_dir" "$iconset_dir"
-if [[ "${REWATCH_UNIVERSAL:-0}" == "1" ]]; then
-    lipo -create "$arm_binary" "$intel_binary" -output "$macos_dir/Rewatch"
+if [[ "${REPLAY_UNIVERSAL:-0}" == "1" ]]; then
+    lipo -create "$arm_binary" "$intel_binary" -output "$macos_dir/Replay"
 else
-    cp "$bin_dir/Rewatch" "$macos_dir/Rewatch"
+    cp "$bin_dir/Replay" "$macos_dir/Replay"
 fi
 cp "$project_dir/Resources/Info.plist" "$contents_dir/Info.plist"
 
@@ -40,7 +40,7 @@ sips -z 256 256 "$project_dir/Resources/AppIcon-1024.png" --out "$iconset_dir/ic
 sips -z 512 512 "$project_dir/Resources/AppIcon-1024.png" --out "$iconset_dir/icon_256x256@2x.png" >/dev/null
 sips -z 512 512 "$project_dir/Resources/AppIcon-1024.png" --out "$iconset_dir/icon_512x512.png" >/dev/null
 cp "$project_dir/Resources/AppIcon-1024.png" "$iconset_dir/icon_512x512@2x.png"
-iconutil -c icns "$iconset_dir" -o "$resources_dir/Rewatch.icns"
+iconutil -c icns "$iconset_dir" -o "$resources_dir/Replay.icns"
 
 if [[ -n "$bundled_tools_dir" ]]; then
     test -x "$bundled_tools_dir/yt-dlp"

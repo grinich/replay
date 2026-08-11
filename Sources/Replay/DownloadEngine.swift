@@ -36,7 +36,7 @@ final class DownloadEngine {
 
     private let processLock = NSLock()
     private var processes: [UUID: Process] = [:]
-    private let metadataQueue = DispatchQueue(label: "com.mg.rewatch.metadata", qos: .utility)
+    private let metadataQueue = DispatchQueue(label: "com.mg.replay.metadata", qos: .utility)
 
     func start(
         itemID: UUID,

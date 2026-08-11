@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="Resources/AppIcon-1024.png" width="144" height="144" alt="Rewatch app icon">
+  <img src="Resources/AppIcon-1024.png" width="144" height="144" alt="Replay app icon">
 </p>
 
-<h1 align="center">Rewatch</h1>
+<h1 align="center">Replay</h1>
 
 <p align="center">
   A beautiful offline video queue for macOS.<br>
@@ -10,28 +10,28 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/grinich/rewatch/releases/latest/download/Rewatch-macOS.zip"><strong>Download the latest macOS build</strong></a>
+  <a href="https://github.com/grinich/replay/releases/latest/download/Replay-macOS.zip"><strong>Download the latest macOS build</strong></a>
   ·
-  <a href="https://github.com/grinich/rewatch/releases">All releases</a>
+  <a href="https://github.com/grinich/replay/releases">All releases</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/grinich/rewatch/actions/workflows/ci.yml"><img src="https://github.com/grinich/rewatch/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/grinich/rewatch/releases/latest"><img src="https://img.shields.io/github/v/release/grinich/rewatch" alt="Latest release"></a>
+  <a href="https://github.com/grinich/replay/actions/workflows/ci.yml"><img src="https://github.com/grinich/replay/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/grinich/replay/releases/latest"><img src="https://img.shields.io/github/v/release/grinich/replay" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
 ## Install
 
-1. [Download the latest build](https://github.com/grinich/rewatch/releases/latest/download/Rewatch-macOS.zip).
-2. Unzip it and move **Rewatch.app** into Applications.
+1. [Download the latest build](https://github.com/grinich/replay/releases/latest/download/Replay-macOS.zip).
+2. Unzip it and move **Replay.app** into Applications.
 3. Because the open-source build is not yet Apple-notarized, Control-click the app and choose **Open** the first time.
 
-The release is universal for Apple silicon and Intel Macs and includes yt-dlp, ffmpeg, and Deno. No Homebrew setup is required. Rewatch requires macOS 13 or newer.
+The release is universal for Apple silicon and Intel Macs and includes yt-dlp, ffmpeg, and Deno. No Homebrew setup is required. Replay requires macOS 13 or newer.
 
 ## Add something to watch
 
-- Copy any block of text containing one or many links, bring Rewatch forward, and press **Command-V**.
+- Copy any block of text containing one or many links, bring Replay forward, and press **Command-V**.
 - Paste into the field at the top of the queue.
 - Drag a URL, `.webloc`, or `.url` file onto the app window or its Dock icon.
 
@@ -67,24 +67,24 @@ The release also bundles a portable ffmpeg build for merging separate video and 
 
 ## Data and privacy
 
-- Downloaded media: `~/Movies/Rewatch`
-- Queue metadata: `~/Library/Application Support/Rewatch/queue.json`
+- Downloaded media: `~/Movies/Replay`
+- Queue metadata: `~/Library/Application Support/Replay/queue.json`
 - No analytics, accounts, or cloud sync
 - No browser-cookie import
 - No DRM decryption
 
-Use Rewatch only for media you are authorized to download. Site terms and copyright rules still apply.
+Use Replay only for media you are authorized to download. Site terms and copyright rules still apply.
 
 ## Build from source
 
 ```sh
-git clone https://github.com/grinich/rewatch.git
-cd rewatch
+git clone https://github.com/grinich/replay.git
+cd replay
 ./scripts/build_app.sh
 ./scripts/test.sh
 ```
 
-The development build is written to `dist/Rewatch.app`. It uses bundled runtime tools when supplied by the release packager, then falls back to Homebrew paths for local development:
+The development build is written to `dist/Replay.app`. It uses bundled runtime tools when supplied by the release packager, then falls back to Homebrew paths for local development:
 
 ```sh
 brew install yt-dlp ffmpeg deno
@@ -100,15 +100,15 @@ The first packaging run downloads checksum-verified yt-dlp and Deno release bina
 
 ## Release workflow
 
-`main` is built and tested by GitHub Actions. A tag matching the version in `Resources/Info.plist`, such as `v0.3.3`, triggers the release workflow, which:
+`main` is built and tested by GitHub Actions. A tag matching the version in `Resources/Info.plist`, such as `v0.4.0`, triggers the release workflow, which:
 
 1. Builds arm64 and x86_64 app binaries and combines them into a universal app.
 2. Bundles universal yt-dlp, ffmpeg, and Deno runtimes plus license notices.
 3. Verifies the app signature and runtime executables.
-4. Publishes `Rewatch-macOS.zip` and its SHA-256 checksum to GitHub Releases.
+4. Publishes `Replay-macOS.zip` and its SHA-256 checksum to GitHub Releases.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and release details.
 
 ## License
 
-Rewatch is available under the [MIT License](LICENSE). Bundled runtime components retain their respective upstream licenses.
+Replay is available under the [MIT License](LICENSE). Bundled runtime components retain their respective upstream licenses.

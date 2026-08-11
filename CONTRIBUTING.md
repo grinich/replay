@@ -1,14 +1,14 @@
 # Contributing
 
-Thanks for helping improve Rewatch.
+Thanks for helping improve Replay.
 
 ## Local setup
 
-Rewatch requires macOS 13 or newer and Swift 5.9 or newer.
+Replay requires macOS 13 or newer and Swift 5.9 or newer.
 
 ```sh
-git clone https://github.com/grinich/rewatch.git
-cd rewatch
+git clone https://github.com/grinich/replay.git
+cd replay
 ./scripts/build_app.sh
 ./scripts/test.sh
 ```
@@ -27,4 +27,4 @@ brew install yt-dlp ffmpeg deno
 
 ## Releases
 
-The version comes from `Resources/Info.plist`. To publish a release, update both bundle version fields and push a matching `v*` tag. GitHub Actions builds the universal, self-contained app and attaches `Rewatch-macOS.zip` plus its SHA-256 checksum to the release.
+The version comes from `Resources/Info.plist`. To publish a release, update both bundle version fields and push a matching `v*` tag. GitHub Actions builds the universal, self-contained app and attaches `Replay-macOS.zip` plus its SHA-256 checksum to the release.

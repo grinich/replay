@@ -3,7 +3,7 @@ import Foundation
 
 private final class QueuePersistenceWriter {
     private let dataFile: URL
-    private let queue = DispatchQueue(label: "com.mg.rewatch.persistence", qos: .utility)
+    private let queue = DispatchQueue(label: "com.mg.replay.persistence", qos: .utility)
     private var pendingItems: [WatchItem]?
     private var pendingWork: DispatchWorkItem?
 
@@ -86,12 +86,12 @@ final class QueueStore: ObservableObject {
         let applicationSupportRoot = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let moviesRoot = fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Movies", isDirectory: true)
-        let migration = RewatchMigration.migrateDirectories(
+        let migration = ReplayMigration.migrateDirectories(
             fileManager: fileManager,
             applicationSupportRoot: applicationSupportRoot,
             moviesRoot: moviesRoot
         )
-        RewatchMigration.migratePreferences()
+        ReplayMigration.migratePreferences()
 
         let applicationSupport = migration.applicationSupport
         dataFile = applicationSupport.appendingPathComponent("queue.json")

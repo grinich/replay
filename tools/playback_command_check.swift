@@ -107,7 +107,7 @@ struct PlaybackCommandCheck {
         precondition(nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double == 42)
         precondition(nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] as? Double == 1.5)
 
-        let suiteName = "Rewatch.PlaybackCommandCheck.\(UUID().uuidString)"
+        let suiteName = "Replay.PlaybackCommandCheck.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         precondition(PlaybackRatePreference.load(from: defaults) == 1)
