@@ -1365,6 +1365,7 @@ private struct ChapterTimelineSegment: Identifiable {
     let startTime: Double
     let endTime: Double
     let title: String
+    let isChapter: Bool
 
     var id: String { "\(startTime)-\(title)" }
 }
@@ -1383,10 +1384,13 @@ private struct ChapterScrubber: View {
             let width = max(1, geometry.size.width)
             let previewTime = hoverTime.map { min(max(0, $0), duration) }
             let timelineSegments = segments
-            let currentChapterTime: Double? = hasChapterTitles && !timelineSegments.isEmpty && duration > 0
-                ? min(max(0, value), duration)
-                : nil
-            let displayedPillTime = previewTime ?? currentChapterTime
+            let currentChapterTime = namedChapterTime(
+                min(max(0, value), duration),
+                in: timelineSegments
+            )
+            let displayedPillTime = previewTime.flatMap {
+                namedChapterTime($0, in: timelineSegments)
+            } ?? currentChapterTime
 
             ZStack(alignment: .topLeading) {
                 if let displayedPillTime {
@@ -1540,28 +1544,43 @@ private struct ChapterScrubber: View {
             unique.append(chapter)
         }
         guard !unique.isEmpty else {
-            return [ChapterTimelineSegment(startTime: 0, endTime: duration, title: "Video")]
+            return [ChapterTimelineSegment(
+                startTime: 0,
+                endTime: duration,
+                title: "Video",
+                isChapter: false
+            )]
         }
 
         var result: [ChapterTimelineSegment] = []
         if let first = unique.first, first.startTime > 0.01 {
-            result.append(ChapterTimelineSegment(startTime: 0, endTime: first.startTime, title: "Video"))
+            result.append(ChapterTimelineSegment(
+                startTime: 0,
+                endTime: first.startTime,
+                title: "Video",
+                isChapter: false
+            ))
         }
         for index in unique.indices {
             let start = unique[index].startTime
             let end = index + 1 < unique.count ? unique[index + 1].startTime : duration
             guard end > start else { continue }
-            result.append(ChapterTimelineSegment(startTime: start, endTime: end, title: unique[index].title))
+            result.append(ChapterTimelineSegment(
+                startTime: start,
+                endTime: end,
+                title: unique[index].title,
+                isChapter: true
+            ))
         }
         return result
     }
 
-    private var hasChapterTitles: Bool {
-        chapters.contains {
-            $0.startTime.isFinite
-                && $0.startTime >= 0
-                && !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
+    private func namedChapterTime(
+        _ time: Double,
+        in segments: [ChapterTimelineSegment]
+    ) -> Double? {
+        guard segment(at: time, in: segments)?.isChapter == true else { return nil }
+        return time
     }
 
     private func segment(
