@@ -26,6 +26,14 @@ struct ResumeModelCheck {
         precondition(decoded.resumablePosition == 123.5)
         precondition(decoded.availableChapters.first?.title == "Intro")
 
+        var older = sample
+        older.title = "Older"
+        older.addedAt = Date(timeIntervalSince1970: 100)
+        var newer = sample
+        newer.title = "Newer"
+        newer.addedAt = Date(timeIntervalSince1970: 200)
+        precondition(QueueOrderPolicy.newestFirst([older, newer]).map(\.title) == ["Newer", "Older"])
+
         let chapterJSON = #"[{"title":"Setup","start_time":65.25,"end_time":120},{"title":"Intro","start_time":0,"end_time":65.25}]"#
         let chapters = ChapterMetadata.decode(json: chapterJSON)
         precondition(chapters?.map(\.title) == ["Intro", "Setup"])

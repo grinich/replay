@@ -100,6 +100,7 @@ final class QueueStore: ObservableObject {
         try? fileManager.createDirectory(at: applicationSupport, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: mediaFolder, withIntermediateDirectories: true)
         load()
+        migrateQueueToNewestFirstIfNeeded()
 
         if migration.didMoveMediaFolder {
             for index in items.indices {
@@ -114,7 +115,7 @@ final class QueueStore: ObservableObject {
             items[index].progressLabel = "Waiting to resume"
         }
         save()
-        selection = queueItems.last?.id ?? archivedItems.first?.id
+        selection = queueItems.first?.id ?? archivedItems.first?.id
 
         networkMonitor.onBecameOnline = { [weak self] in
             self?.resumeWaitingDownloads()
@@ -257,7 +258,7 @@ final class QueueStore: ObservableObject {
             thumbnailFilePath: nil,
             subtitleFilePath: nil
         )
-        items.append(item)
+        items.insert(item, at: 0)
         selection = item.id
         lastIntakeError = nil
         save()
@@ -474,7 +475,7 @@ final class QueueStore: ObservableObject {
         items.removeAll { $0.id == id }
         save()
         if selection == id {
-            selection = queueItems.last?.id ?? archivedItems.first?.id
+            selection = queueItems.first?.id ?? archivedItems.first?.id
         }
     }
 
@@ -485,6 +486,15 @@ final class QueueStore: ObservableObject {
 
     func revealMediaFolder() {
         NSWorkspace.shared.open(mediaFolder)
+    }
+
+    private func migrateQueueToNewestFirstIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard defaults.integer(forKey: QueueOrderPolicy.versionDefaultsKey) < QueueOrderPolicy.currentVersion else {
+            return
+        }
+        items = QueueOrderPolicy.newestFirst(items)
+        defaults.set(QueueOrderPolicy.currentVersion, forKey: QueueOrderPolicy.versionDefaultsKey)
     }
 
     private func handle(_ event: DownloadEngine.Event, for id: UUID) {

@@ -201,17 +201,17 @@ struct ContentView: View {
                 .coordinateSpace(name: "queue-list")
                 .onPreferenceChange(QueueRowFramePreferenceKey.self) { queueRowFrames = $0 }
                 .onChange(of: store.items.map(\.id)) { itemIDs in
-                    let addedID = itemIDs.last { !knownItemIDs.contains($0) }
+                    let addedID = itemIDs.first { !knownItemIDs.contains($0) }
                     knownItemIDs = Set(itemIDs)
                     guard let addedID else { return }
                     withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(addedID, anchor: .bottom)
+                        proxy.scrollTo(addedID, anchor: .top)
                     }
                 }
                 .onAppear {
                     guard let selectedID = store.selection else { return }
                     DispatchQueue.main.async {
-                        proxy.scrollTo(selectedID, anchor: .bottom)
+                        proxy.scrollTo(selectedID, anchor: .top)
                     }
                 }
             }

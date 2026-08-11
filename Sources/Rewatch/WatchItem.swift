@@ -69,3 +69,19 @@ struct WatchItem: Identifiable, Codable, Hashable {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 }
+
+enum QueueOrderPolicy {
+    static let currentVersion = 1
+    static let versionDefaultsKey = "queueOrderVersion"
+
+    static func newestFirst(_ items: [WatchItem]) -> [WatchItem] {
+        items.enumerated()
+            .sorted { lhs, rhs in
+                if lhs.element.addedAt == rhs.element.addedAt {
+                    return lhs.offset < rhs.offset
+                }
+                return lhs.element.addedAt > rhs.element.addedAt
+            }
+            .map(\.element)
+    }
+}
