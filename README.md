@@ -21,6 +21,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
+## Screenshots
+
+<p align="center">
+  <a href="docs/images/replay-player.png"><img src="docs/images/replay-player.png" width="49%" alt="Replay playing a video with the offline queue and chapter timeline visible"></a>
+  <a href="docs/images/replay-chapters.png"><img src="docs/images/replay-chapters.png" width="49%" alt="Replay playing a video with the chapter sidebar expanded"></a>
+</p>
+
 ## Install
 
 1. [Download the latest build](https://github.com/grinich/replay/releases/latest/download/Replay-macOS.zip).
