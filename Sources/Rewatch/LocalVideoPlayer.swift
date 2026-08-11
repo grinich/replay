@@ -4,7 +4,44 @@ import SwiftUI
 
 private final class FloatingVideoPlayerView: AVPlayerView {
     var onVolumeScroll: ((Double) -> Void)?
+    var onHoverChanged: ((Bool) -> Void)?
+    var onReturnToMainWindow: (() -> Void)?
     private let volumeScrollInterpreter = PlayerVolumeScrollInterpreter()
+    private let returnButton = NSButton()
+    private var hoverTrackingArea: NSTrackingArea?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureReturnButton()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureReturnButton()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        hoverTrackingArea = trackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        setHoverControlsVisible(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        setHoverControlsVisible(false)
+    }
 
     override func scrollWheel(with event: NSEvent) {
         let adjustment = volumeScrollInterpreter.adjustment(for: event)
@@ -13,6 +50,42 @@ private final class FloatingVideoPlayerView: AVPlayerView {
 
     override func swipe(with event: NSEvent) {
         // Consume swipe momentum for the same reason as scroll-wheel events.
+    }
+
+    private func configureReturnButton() {
+        let symbol = NSImage(systemSymbolName: "pip.exit", accessibilityDescription: "Return to Rewatch")
+            ?? NSImage(systemSymbolName: "arrow.up.backward.and.arrow.down.forward", accessibilityDescription: "Return to Rewatch")
+        returnButton.image = symbol?.withSymbolConfiguration(
+            NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        )
+        returnButton.imagePosition = .imageOnly
+        returnButton.isBordered = false
+        returnButton.contentTintColor = .white
+        returnButton.toolTip = "Return to Rewatch"
+        returnButton.setAccessibilityLabel("Return to Rewatch")
+        returnButton.target = self
+        returnButton.action = #selector(returnToMainWindow)
+        returnButton.translatesAutoresizingMaskIntoConstraints = false
+        returnButton.wantsLayer = true
+        returnButton.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.58).cgColor
+        returnButton.layer?.cornerRadius = 15
+        returnButton.isHidden = true
+        addSubview(returnButton, positioned: .above, relativeTo: nil)
+        NSLayoutConstraint.activate([
+            returnButton.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            returnButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            returnButton.widthAnchor.constraint(equalToConstant: 30),
+            returnButton.heightAnchor.constraint(equalToConstant: 30)
+        ])
+    }
+
+    private func setHoverControlsVisible(_ visible: Bool) {
+        returnButton.isHidden = !visible
+        onHoverChanged?(visible)
+    }
+
+    @objc private func returnToMainWindow() {
+        onReturnToMainWindow?()
     }
 }
 
@@ -922,6 +995,7 @@ struct LocalVideoPlayer: NSViewRepresentable {
             panel.delegate = self
             panel.titleVisibility = .hidden
             panel.titlebarAppearsTransparent = true
+            panel.standardWindowButton(.closeButton)?.isHidden = true
             panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
             panel.standardWindowButton(.zoomButton)?.isHidden = true
             panel.isFloatingPanel = true
@@ -938,6 +1012,13 @@ struct LocalVideoPlayer: NSViewRepresentable {
             panel.animationBehavior = .none
             panel.isReleasedWhenClosed = false
             panel.contentView = floatingView
+            floatingView.onHoverChanged = { [weak panel] isHovering in
+                panel?.standardWindowButton(.closeButton)?.isHidden = !isHovering
+            }
+            floatingView.onReturnToMainWindow = { [weak self, weak panel] in
+                guard let self, let panel else { return }
+                self.returnToMainWindow(from: panel)
+            }
 
             let visibleFrame = playerView?.window?.screen?.visibleFrame
                 ?? NSScreen.main?.visibleFrame
@@ -994,6 +1075,8 @@ struct LocalVideoPlayer: NSViewRepresentable {
             guard backgroundPanel === panel else { return }
             backgroundPlayerView?.player = nil
             backgroundPlayerView?.onVolumeScroll = nil
+            backgroundPlayerView?.onHoverChanged = nil
+            backgroundPlayerView?.onReturnToMainWindow = nil
             if restoreInline, let player {
                 playerView?.playerLayer.player = player
             }
@@ -1002,6 +1085,17 @@ struct LocalVideoPlayer: NSViewRepresentable {
             panel.close()
             backgroundPlayerView = nil
             backgroundPanel = nil
+        }
+
+        private func returnToMainWindow(from panel: NSPanel) {
+            guard backgroundPanel === panel else { return }
+            let mainWindow = NSApp.windows.first { window in
+                window !== panel && !(window is NSPanel) && window.canBecomeMain
+            }
+            backgroundOverlayDismissed = false
+            hideBackgroundPlayer(animated: false, restoreInline: true)
+            NSApp.activate(ignoringOtherApps: true)
+            mainWindow?.makeKeyAndOrderFront(nil)
         }
 
         @objc func handleVideoClick(_ gesture: NSClickGestureRecognizer) {
@@ -1014,6 +1108,9 @@ struct LocalVideoPlayer: NSViewRepresentable {
                   backgroundPanel === panel else { return }
             backgroundOverlayDismissed = true
             backgroundPlayerView?.player = nil
+            backgroundPlayerView?.onVolumeScroll = nil
+            backgroundPlayerView?.onHoverChanged = nil
+            backgroundPlayerView?.onReturnToMainWindow = nil
             backgroundPlayerView = nil
             backgroundPanel = nil
             if let player {

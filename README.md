@@ -100,7 +100,7 @@ The first packaging run downloads checksum-verified yt-dlp and Deno release bina
 
 ## Release workflow
 
-`main` is built and tested by GitHub Actions. A tag matching the version in `Resources/Info.plist`, such as `v0.3.2`, triggers the release workflow, which:
+`main` is built and tested by GitHub Actions. A tag matching the version in `Resources/Info.plist`, such as `v0.3.3`, triggers the release workflow, which:
 
 1. Builds arm64 and x86_64 app binaries and combines them into a universal app.
 2. Bundles universal yt-dlp, ffmpeg, and Deno runtimes plus license notices.
