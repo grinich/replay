@@ -157,6 +157,10 @@ struct ContentView: View {
             ScrollViewReader { proxy in
                 ScrollView(.vertical) {
                     LazyVStack(alignment: .leading, spacing: 4, pinnedViews: [.sectionHeaders]) {
+                        Color.clear
+                            .frame(height: 0)
+                            .id("queue-top")
+
                         if !queueItems.isEmpty {
                             ForEach(queueItems) { item in
                                 sidebarRow(item)
@@ -209,9 +213,12 @@ struct ContentView: View {
                     }
                 }
                 .onAppear {
-                    guard let selectedID = store.selection else { return }
+                    // A persisted selection can be far down the queue. The
+                    // list itself should nevertheless start at its real top
+                    // after every launch, with the normal eight-point inset
+                    // above the newest item.
                     DispatchQueue.main.async {
-                        proxy.scrollTo(selectedID, anchor: .top)
+                        proxy.scrollTo("queue-top", anchor: .top)
                     }
                 }
             }
@@ -655,6 +662,68 @@ private struct SidebarSectionHeader: View {
     }
 }
 
+private struct PlayerStageLayout: Layout {
+    private let topPadding: CGFloat = 12
+    private let controlsSpacing: CGFloat = 13
+    private let bottomPadding: CGFloat = 14
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        let proposedWidth = proposal.width
+        let playerSize = subviews.first?.sizeThatFits(
+            ProposedViewSize(width: proposedWidth, height: nil)
+        ) ?? .zero
+        let controlsSize = subviews.count > 1
+            ? subviews[1].sizeThatFits(ProposedViewSize(width: proposedWidth, height: nil))
+            : .zero
+        let width = proposedWidth ?? max(playerSize.width, controlsSize.width)
+        let naturalHeight = topPadding
+            + playerSize.height
+            + (subviews.count > 1 ? controlsSpacing + controlsSize.height + bottomPadding : 0)
+        return CGSize(width: width, height: proposal.height ?? naturalHeight)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard let player = subviews.first else { return }
+        let width = bounds.width
+
+        guard subviews.count > 1 else {
+            player.place(
+                at: CGPoint(x: bounds.minX, y: bounds.minY + topPadding),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: width, height: max(0, bounds.height - topPadding))
+            )
+            return
+        }
+
+        let controls = subviews[1]
+        let controlsSize = controls.sizeThatFits(ProposedViewSize(width: width, height: nil))
+        let playerHeight = max(
+            0,
+            bounds.height - topPadding - controlsSpacing - controlsSize.height - bottomPadding
+        )
+
+        player.place(
+            at: CGPoint(x: bounds.minX, y: bounds.minY + topPadding),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: width, height: playerHeight)
+        )
+        controls.place(
+            at: CGPoint(x: bounds.minX, y: bounds.minY + topPadding + playerHeight + controlsSpacing),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: width, height: controlsSize.height)
+        )
+    }
+}
+
 private struct VideoDetail: View {
     @EnvironmentObject private var store: QueueStore
     @AppStorage("subtitlesEnabled") private var subtitlesEnabled = false
@@ -818,11 +887,8 @@ private struct VideoDetail: View {
                 DetailBackdrop(thumbnailURL: item.thumbnailFileURL)
                     .equatable()
 
-                VStack(spacing: 13) {
+                PlayerStageLayout {
                     playerSurface
-                        .frame(width: contentWidth)
-                        .frame(maxHeight: .infinity)
-                        .padding(.top, 12)
 
                     if item.localFileURL != nil, item.state == .ready, isPlayerPrepared {
                         PlaybackControls(
@@ -838,11 +904,10 @@ private struct VideoDetail: View {
                             subtitlesEnabled: subtitlesEnabled,
                             toggleSubtitles: { subtitlesEnabled.toggle() }
                         )
-                        .frame(width: contentWidth)
-                        .padding(.bottom, 14)
+                        .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: contentWidth, height: geometry.size.height)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
         }

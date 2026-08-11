@@ -178,6 +178,9 @@ struct WindowStyleConfigurator: NSViewRepresentable {
         window.toolbarStyle = .unified
         window.toolbar?.showsBaselineSeparator = false
         window.styleMask.insert(.fullSizeContentView)
+        window.collectionBehavior.remove(.fullScreenAuxiliary)
+        window.collectionBehavior.remove(.fullScreenNone)
+        window.collectionBehavior.insert(.fullScreenPrimary)
         // The center-pane actions live inside the full-size title-bar region.
         // Treating all SwiftUI content as draggable background lets AppKit
         // consume their mouse-down events before Button and Menu receive them.

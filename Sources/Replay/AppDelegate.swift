@@ -27,9 +27,24 @@ final class URLInbox: ObservableObject {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let inbox = URLInbox()
     private var pasteMonitor: Any?
+    private var mediaKeyMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         SystemMediaController.shared.start()
+        mediaKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .systemDefined) { event in
+            guard let action = HardwareMediaKeyEventPolicy.action(
+                subtype: Int(event.subtype.rawValue),
+                data1: event.data1
+            ), PlaybackCommandCenter.shared.hasActivePlayer else { return event }
+
+            switch action {
+            case .togglePlayback:
+                PlaybackCommandCenter.shared.togglePlayback()
+            case .skip(let seconds):
+                PlaybackCommandCenter.shared.skip(by: seconds)
+            }
+            return nil
+        }
         pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let shortcutModifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
 
@@ -117,6 +132,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SystemMediaController.shared.stop()
         if let pasteMonitor {
             NSEvent.removeMonitor(pasteMonitor)
+        }
+        if let mediaKeyMonitor {
+            NSEvent.removeMonitor(mediaKeyMonitor)
         }
     }
 

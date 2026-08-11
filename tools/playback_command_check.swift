@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import AVFoundation
 import MediaPlayer
@@ -5,6 +6,16 @@ import MediaPlayer
 @main
 struct PlaybackCommandCheck {
     static func main() {
+        let resizingPlayerView = PictureInPicturePlayerView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360)
+        )
+        resizingPlayerView.setFrameSize(NSSize(width: 1_280, height: 720))
+        precondition(resizingPlayerView.playerLayer.frame == resizingPlayerView.bounds)
+        precondition(resizingPlayerView.playerLayer.autoresizingMask.contains(.layerWidthSizable))
+        precondition(resizingPlayerView.playerLayer.autoresizingMask.contains(.layerHeightSizable))
+        precondition(resizingPlayerView.playerLayer.actions?["bounds"] is NSNull)
+        precondition(resizingPlayerView.playerLayer.actions?["position"] is NSNull)
+
         precondition(PlaybackRatePolicy.adjusted(1, by: -0.1) == 1)
         precondition(PlaybackRatePolicy.adjusted(1, by: 0.1) == 1.1)
         precondition(PlaybackRatePolicy.adjusted(2.4, by: 0.1) == 2.5)
@@ -43,6 +54,36 @@ struct PlaybackCommandCheck {
             isPrecise: true,
             isMomentum: false
         ) == 0)
+        precondition(PlayerVolumeScrollEventPolicy.shouldAdjust(
+            isPrecise: true,
+            phase: .began,
+            momentumPhase: []
+        ))
+        precondition(PlayerVolumeScrollEventPolicy.shouldAdjust(
+            isPrecise: true,
+            phase: .changed,
+            momentumPhase: []
+        ))
+        precondition(!PlayerVolumeScrollEventPolicy.shouldAdjust(
+            isPrecise: true,
+            phase: [],
+            momentumPhase: []
+        ))
+        precondition(!PlayerVolumeScrollEventPolicy.shouldAdjust(
+            isPrecise: true,
+            phase: .ended,
+            momentumPhase: []
+        ))
+        precondition(!PlayerVolumeScrollEventPolicy.shouldAdjust(
+            isPrecise: true,
+            phase: [],
+            momentumPhase: .changed
+        ))
+        precondition(PlayerVolumeScrollEventPolicy.shouldAdjust(
+            isPrecise: false,
+            phase: [],
+            momentumPhase: []
+        ))
         precondition(PictureInPicturePolicy.shouldStart(
             isAppActive: false,
             isPlaying: true,
@@ -50,6 +91,24 @@ struct PlaybackCommandCheck {
             isAlreadyActive: false,
             isExternalPlaybackActive: false
         ))
+        let mediaKeyDown = (16 << 16) | (0xA << 8)
+        let mediaKeyUp = (16 << 16) | (0xB << 8)
+        let mediaKeyRepeat = mediaKeyDown | 0x1
+        precondition(HardwareMediaKeyEventPolicy.action(
+            subtype: 8,
+            data1: mediaKeyDown
+        ) == .togglePlayback)
+        precondition(HardwareMediaKeyEventPolicy.action(
+            subtype: 8,
+            data1: (17 << 16) | (0xA << 8)
+        ) == .skip(10))
+        precondition(HardwareMediaKeyEventPolicy.action(
+            subtype: 8,
+            data1: (18 << 16) | (0xA << 8)
+        ) == .skip(-10))
+        precondition(HardwareMediaKeyEventPolicy.action(subtype: 8, data1: mediaKeyUp) == nil)
+        precondition(HardwareMediaKeyEventPolicy.action(subtype: 8, data1: mediaKeyRepeat) == nil)
+        precondition(HardwareMediaKeyEventPolicy.action(subtype: 0, data1: mediaKeyDown) == nil)
         precondition(!PictureInPicturePolicy.shouldStart(
             isAppActive: true,
             isPlaying: true,
