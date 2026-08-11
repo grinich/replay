@@ -3,15 +3,15 @@
 import PackageDescription
 
 let package = Package(
-    name: "WatchLater",
+    name: "Rewatch",
     platforms: [.macOS(.v13)],
     products: [
-        .executable(name: "WatchLater", targets: ["WatchLater"])
+        .executable(name: "Rewatch", targets: ["Rewatch"])
     ],
     targets: [
         .executableTarget(
-            name: "WatchLater",
-            path: "Sources/WatchLater"
+            name: "Rewatch",
+            path: "Sources/Rewatch"
         )
     ],
     swiftLanguageVersions: [.v5]

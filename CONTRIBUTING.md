@@ -1,14 +1,14 @@
 # Contributing
 
-Thanks for helping improve Watch Later.
+Thanks for helping improve Rewatch.
 
 ## Local setup
 
-Watch Later requires macOS 13 or newer and Swift 5.9 or newer.
+Rewatch requires macOS 13 or newer and Swift 5.9 or newer.
 
 ```sh
-git clone https://github.com/grinich/watch-later.git
-cd watch-later
+git clone https://github.com/grinich/rewatch.git
+cd rewatch
 ./scripts/build_app.sh
 ./scripts/test.sh
 ```
@@ -27,4 +27,4 @@ brew install yt-dlp ffmpeg deno
 
 ## Releases
 
-The version comes from `Resources/Info.plist`. To publish a release, update both bundle version fields and push a matching `v*` tag. GitHub Actions builds the universal, self-contained app and attaches `Watch-Later-macOS.zip` plus its SHA-256 checksum to the release.
+The version comes from `Resources/Info.plist`. To publish a release, update both bundle version fields and push a matching `v*` tag. GitHub Actions builds the universal, self-contained app and attaches `Rewatch-macOS.zip` plus its SHA-256 checksum to the release.

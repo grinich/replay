@@ -14,19 +14,30 @@ struct ContentView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var queueRowFrames: [UUID: CGRect] = [:]
     @State private var windowWidth: CGFloat = 1320
+    @State private var urlBarFrame: CGRect = .zero
+    @FocusState private var isURLFieldFocused: Bool
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
                 .navigationSplitViewColumnWidth(min: 272, ideal: 312, max: 360)
+                .simultaneousGesture(
+                    SpatialTapGesture(coordinateSpace: .named("rewatch-window"))
+                        .onEnded(handleWindowTap)
+                )
         } detail: {
             detail
+                .simultaneousGesture(
+                    TapGesture().onEnded(dismissURLFieldFocus)
+                )
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 980, minHeight: 640)
+        .coordinateSpace(name: "rewatch-window")
+        .onPreferenceChange(URLBarFramePreferenceKey.self) { urlBarFrame = $0 }
         .background {
             ZStack {
-                WindowStyleConfigurator(title: store.selectedItem?.title ?? "Watch Later")
+                WindowStyleConfigurator(title: store.selectedItem?.title ?? "Rewatch")
                     .frame(width: 0, height: 0)
 
                 WindowWidthReader { width in
@@ -114,6 +125,7 @@ struct ContentView: View {
                 DropAndAddBar(
                     urlText: $urlText,
                     isDropTarget: $isDropTarget,
+                    isURLFieldFocused: $isURLFieldFocused,
                     submit: submitURL,
                     receiveProviders: receiveProviders
                 )
@@ -180,6 +192,7 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 9)
+                    .padding(.top, 8)
                     .padding(.bottom, 12)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -304,6 +317,17 @@ struct ContentView: View {
         }
         return accepted
     }
+
+    private func handleWindowTap(_ tap: SpatialTapGesture.Value) {
+        guard !urlBarFrame.contains(tap.location) else { return }
+        dismissURLFieldFocus()
+    }
+
+    private func dismissURLFieldFocus() {
+        guard isURLFieldFocused else { return }
+        isURLFieldFocused = false
+        NSApp.keyWindow?.makeFirstResponder(nil)
+    }
 }
 
 private struct QueueRowFramePreferenceKey: PreferenceKey {
@@ -311,6 +335,14 @@ private struct QueueRowFramePreferenceKey: PreferenceKey {
 
     static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
         value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct URLBarFramePreferenceKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
     }
 }
 
@@ -1720,9 +1752,9 @@ private struct ChapterSidebar: View {
 private struct DropAndAddBar: View {
     @Binding var urlText: String
     @Binding var isDropTarget: Bool
+    var isURLFieldFocused: FocusState<Bool>.Binding
     let submit: () -> Void
     let receiveProviders: ([NSItemProvider]) -> Bool
-    @FocusState private var isURLFieldFocused: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1732,7 +1764,7 @@ private struct DropAndAddBar: View {
             TextField("Paste a URL or text", text: $urlText)
                 .textFieldStyle(.plain)
                 .frame(minWidth: 0, maxWidth: .infinity)
-                .focused($isURLFieldFocused)
+                .focused(isURLFieldFocused)
                 .onSubmit(submit)
                 .onExitCommand(perform: removeFocus)
             Button(action: submit) {
@@ -1756,11 +1788,19 @@ private struct DropAndAddBar: View {
             RoundedRectangle(cornerRadius: 15, style: .continuous)
                 .strokeBorder(isDropTarget ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.07))
         }
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: URLBarFramePreferenceKey.self,
+                    value: geometry.frame(in: .named("rewatch-window"))
+                )
+            }
+        }
         .onDrop(of: [UTType.url, UTType.fileURL, UTType.plainText], isTargeted: $isDropTarget, perform: receiveProviders)
     }
 
     private func removeFocus() {
-        isURLFieldFocused = false
+        isURLFieldFocused.wrappedValue = false
         NSApp.keyWindow?.makeFirstResponder(nil)
     }
 }
@@ -1785,7 +1825,7 @@ private struct EmptyLibraryView: View {
                     )
                 Text(isDropTarget ? "Drop to save for later" : "Ready when you are")
                     .font(.title2.weight(.semibold))
-                Text("Copy a video link and press ⌘V. Watch Later downloads a clean offline copy and remembers your place.")
+                Text("Copy a video link and press ⌘V. Rewatch downloads a clean offline copy and remembers your place.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

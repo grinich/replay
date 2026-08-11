@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @main
-struct WatchLaterApp: App {
+struct RewatchApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = QueueStore()
 

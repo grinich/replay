@@ -202,7 +202,7 @@ enum NowPlayingInfoBuilder {
         snapshot: PlaybackSnapshot
     ) -> [String: Any] {
         var info: [String: Any] = [
-            MPMediaItemPropertyTitle: title.isEmpty ? "Watch Later" : title,
+            MPMediaItemPropertyTitle: title.isEmpty ? "Rewatch" : title,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: snapshot.currentTime,
             MPNowPlayingInfoPropertyPlaybackRate: snapshot.isPlaying ? snapshot.playbackRate : 0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: snapshot.playbackRate
@@ -221,7 +221,7 @@ final class SystemMediaController {
     static let shared = SystemMediaController()
 
     private var isStarted = false
-    private var title = "Watch Later"
+    private var title = "Rewatch"
     private var author = ""
     private var snapshot = PlaybackSnapshot.empty
 
@@ -355,7 +355,7 @@ enum PlaybackRatePreference {
 }
 
 enum PlaybackAudioPolicy {
-    // Watch Later is primarily speech, and AVFoundation documents time-domain
+    // Rewatch is primarily speech, and AVFoundation documents time-domain
     // processing as the lower-cost voice algorithm. Unlike the spectral music
     // processor, it can follow interactive rate changes without rebuilding a
     // large analysis window and creating an audible hole.

@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="Resources/AppIcon-1024.png" width="144" height="144" alt="Watch Later app icon">
+  <img src="Resources/AppIcon-1024.png" width="144" height="144" alt="Rewatch app icon">
 </p>
 
-<h1 align="center">Watch Later</h1>
+<h1 align="center">Rewatch</h1>
 
 <p align="center">
   A beautiful offline video queue for macOS.<br>
@@ -10,28 +10,28 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/grinich/watch-later/releases/latest/download/Watch-Later-macOS.zip"><strong>Download the latest macOS build</strong></a>
+  <a href="https://github.com/grinich/rewatch/releases/latest/download/Rewatch-macOS.zip"><strong>Download the latest macOS build</strong></a>
   ·
-  <a href="https://github.com/grinich/watch-later/releases">All releases</a>
+  <a href="https://github.com/grinich/rewatch/releases">All releases</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/grinich/watch-later/actions/workflows/ci.yml"><img src="https://github.com/grinich/watch-later/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/grinich/watch-later/releases/latest"><img src="https://img.shields.io/github/v/release/grinich/watch-later" alt="Latest release"></a>
+  <a href="https://github.com/grinich/rewatch/actions/workflows/ci.yml"><img src="https://github.com/grinich/rewatch/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/grinich/rewatch/releases/latest"><img src="https://img.shields.io/github/v/release/grinich/rewatch" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
 ## Install
 
-1. [Download the latest build](https://github.com/grinich/watch-later/releases/latest/download/Watch-Later-macOS.zip).
-2. Unzip it and move **Watch Later.app** into Applications.
+1. [Download the latest build](https://github.com/grinich/rewatch/releases/latest/download/Rewatch-macOS.zip).
+2. Unzip it and move **Rewatch.app** into Applications.
 3. Because the open-source build is not yet Apple-notarized, Control-click the app and choose **Open** the first time.
 
-The release is universal for Apple silicon and Intel Macs and includes yt-dlp, ffmpeg, and Deno. No Homebrew setup is required. Watch Later requires macOS 13 or newer.
+The release is universal for Apple silicon and Intel Macs and includes yt-dlp, ffmpeg, and Deno. No Homebrew setup is required. Rewatch requires macOS 13 or newer.
 
 ## Add something to watch
 
-- Copy any block of text containing one or many links, bring Watch Later forward, and press **Command-V**.
+- Copy any block of text containing one or many links, bring Rewatch forward, and press **Command-V**.
 - Paste into the field at the top of the queue.
 - Drag a URL, `.webloc`, or `.url` file onto the app window or its Dock icon.
 
@@ -67,24 +67,24 @@ The release also bundles a portable ffmpeg build for merging separate video and 
 
 ## Data and privacy
 
-- Downloaded media: `~/Movies/Watch Later`
-- Queue metadata: `~/Library/Application Support/Watch Later/queue.json`
+- Downloaded media: `~/Movies/Rewatch`
+- Queue metadata: `~/Library/Application Support/Rewatch/queue.json`
 - No analytics, accounts, or cloud sync
 - No browser-cookie import
 - No DRM decryption
 
-Use Watch Later only for media you are authorized to download. Site terms and copyright rules still apply.
+Use Rewatch only for media you are authorized to download. Site terms and copyright rules still apply.
 
 ## Build from source
 
 ```sh
-git clone https://github.com/grinich/watch-later.git
-cd watch-later
+git clone https://github.com/grinich/rewatch.git
+cd rewatch
 ./scripts/build_app.sh
 ./scripts/test.sh
 ```
 
-The development build is written to `dist/Watch Later.app`. It uses bundled runtime tools when supplied by the release packager, then falls back to Homebrew paths for local development:
+The development build is written to `dist/Rewatch.app`. It uses bundled runtime tools when supplied by the release packager, then falls back to Homebrew paths for local development:
 
 ```sh
 brew install yt-dlp ffmpeg deno
@@ -100,15 +100,15 @@ The first packaging run downloads checksum-verified yt-dlp and Deno release bina
 
 ## Release workflow
 
-`main` is built and tested by GitHub Actions. A tag matching the version in `Resources/Info.plist`, such as `v0.2.8`, triggers the release workflow, which:
+`main` is built and tested by GitHub Actions. A tag matching the version in `Resources/Info.plist`, such as `v0.3.0`, triggers the release workflow, which:
 
 1. Builds arm64 and x86_64 app binaries and combines them into a universal app.
 2. Bundles universal yt-dlp, ffmpeg, and Deno runtimes plus license notices.
 3. Verifies the app signature and runtime executables.
-4. Publishes `Watch-Later-macOS.zip` and its SHA-256 checksum to GitHub Releases.
+4. Publishes `Rewatch-macOS.zip` and its SHA-256 checksum to GitHub Releases.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and release details.
 
 ## License
 
-Watch Later is available under the [MIT License](LICENSE). Bundled runtime components retain their respective upstream licenses.
+Rewatch is available under the [MIT License](LICENSE). Bundled runtime components retain their respective upstream licenses.

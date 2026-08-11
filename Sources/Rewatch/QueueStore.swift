@@ -3,7 +3,7 @@ import Foundation
 
 private final class QueuePersistenceWriter {
     private let dataFile: URL
-    private let queue = DispatchQueue(label: "com.mg.watchlater.persistence", qos: .utility)
+    private let queue = DispatchQueue(label: "com.mg.rewatch.persistence", qos: .utility)
     private var pendingItems: [WatchItem]?
     private var pendingWork: DispatchWorkItem?
 
@@ -82,16 +82,32 @@ final class QueueStore: ObservableObject {
     let mediaFolder: URL
 
     init() {
-        let applicationSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Watch Later", isDirectory: true)
+        let fileManager = FileManager.default
+        let applicationSupportRoot = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let moviesRoot = fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Movies", isDirectory: true)
+        let migration = RewatchMigration.migrateDirectories(
+            fileManager: fileManager,
+            applicationSupportRoot: applicationSupportRoot,
+            moviesRoot: moviesRoot
+        )
+        RewatchMigration.migratePreferences()
+
+        let applicationSupport = migration.applicationSupport
         dataFile = applicationSupport.appendingPathComponent("queue.json")
         persistenceWriter = QueuePersistenceWriter(dataFile: dataFile)
-        mediaFolder = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Movies", isDirectory: true)
-            .appendingPathComponent("Watch Later", isDirectory: true)
-        try? FileManager.default.createDirectory(at: applicationSupport, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(at: mediaFolder, withIntermediateDirectories: true)
+        mediaFolder = migration.mediaFolder
+        try? fileManager.createDirectory(at: applicationSupport, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: mediaFolder, withIntermediateDirectories: true)
         load()
+
+        if migration.didMoveMediaFolder {
+            for index in items.indices {
+                items[index].localFilePath = migration.remappedMediaPath(items[index].localFilePath)
+                items[index].thumbnailFilePath = migration.remappedMediaPath(items[index].thumbnailFilePath)
+                items[index].subtitleFilePath = migration.remappedMediaPath(items[index].subtitleFilePath)
+            }
+        }
 
         for index in items.indices where items[index].state == .downloading {
             items[index].state = .queued
