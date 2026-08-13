@@ -782,7 +782,7 @@ private struct VideoDetail: View {
             centerPane
                 .inspector(isPresented: $chaptersPresented) {
                     chapterSidebar
-                        .inspectorColumnWidth(min: 232, ideal: 300, max: 400)
+                        .inspectorColumnWidth(min: 232, ideal: 330, max: 500)
                 }
         } else {
             HSplitView {
@@ -791,7 +791,7 @@ private struct VideoDetail: View {
 
                 if chaptersPresented {
                     chapterSidebar
-                        .frame(minWidth: 232, idealWidth: 300, maxWidth: 400)
+                        .frame(minWidth: 232, idealWidth: 330, maxWidth: 500)
                 }
             }
         }
@@ -922,8 +922,14 @@ private struct VideoDetail: View {
             chapters: item.availableChapters,
             currentTime: playback.currentTime,
             isPresented: chaptersPresented,
+            enrichment: store.enrichments[item.id],
+            activity: store.enrichmentActivity[item.id],
+            canEnrich: item.state == .ready && item.subtitleFileURL != nil,
             toggle: toggleChapters,
-            select: seekToChapter
+            select: seekToChapter,
+            enrich: { force, guidance in store.enrichChapters(for: item.id, force: force, guidance: guidance) },
+            cancelEnrichment: { store.cancelEnrichment(for: item.id) },
+            dismissFailure: { store.dismissEnrichmentFailure(for: item.id) }
         )
         .ignoresSafeArea(.container, edges: .top)
     }
@@ -1747,8 +1753,19 @@ private struct ChapterSidebar: View {
     let chapters: [VideoChapter]
     let currentTime: Double
     let isPresented: Bool
+    let enrichment: VideoEnrichment?
+    let activity: QueueStore.EnrichmentActivity?
+    let canEnrich: Bool
     let toggle: () -> Void
     let select: (VideoChapter) -> Void
+    let enrich: (_ force: Bool, _ guidance: String?) -> Void
+    let cancelEnrichment: () -> Void
+    let dismissFailure: () -> Void
+
+    @State private var expandedChapters: Set<String> = []
+    @State private var revealedSolutions: Set<String> = []
+    @State private var regeneratePopoverShown = false
+    @State private var regenerateGuidance = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1781,41 +1798,310 @@ private struct ChapterSidebar: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 3) {
                     ForEach(chapters) { chapter in
-                        Button {
-                            select(chapter)
-                        } label: {
-                            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                                Text(formatTime(chapter.startTime))
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(isCurrent(chapter) ? Color.accentColor : Color.secondary)
-                                    .frame(width: 48, alignment: .trailing)
-                                Text(chapter.title)
-                                    .font(.callout.weight(isCurrent(chapter) ? .semibold : .regular))
-                                    .foregroundStyle(.primary)
-                                    .multilineTextAlignment(.leading)
-                                    .lineLimit(2)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 10)
-                            .background {
-                                if isCurrent(chapter) {
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(Color.accentColor.opacity(0.13))
-                                }
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
+                        chapterRow(chapter)
                     }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 8)
             }
             .scrollIndicators(.hidden)
+
+            if canEnrich || activity != nil {
+                Divider()
+                enrichmentFooter
+            }
         }
         .background(.ultraThinMaterial)
+    }
+
+    @ViewBuilder
+    private func chapterRow(_ chapter: VideoChapter) -> some View {
+        let chapterEnrichment = enrichment?.enrichment(forChapterID: chapter.id)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Button {
+                    select(chapter)
+                } label: {
+                    Text(formatTime(chapter.startTime))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(isCurrent(chapter) ? Color.accentColor : Color.secondary)
+                        .frame(width: 48, alignment: .trailing)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Go to \(formatTime(chapter.startTime))")
+
+                if chapterEnrichment != nil {
+                    Button {
+                        toggleExpanded(chapter.id)
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            chapterTitle(chapter)
+                            Spacer(minLength: 0)
+                            Image(systemName: expandedChapters.contains(chapter.id) ? "chevron.down" : "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 22, height: 22)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(expandedChapters.contains(chapter.id) ? "Hide summary and exercises" : "Show summary and exercises")
+                } else {
+                    chapterTitle(chapter)
+                    Spacer(minLength: 0)
+                }
+            }
+            .padding(.leading, 10)
+            .padding(.trailing, 6)
+            .padding(.vertical, 10)
+
+            if let chapterEnrichment, expandedChapters.contains(chapter.id) {
+                enrichmentDetail(chapterEnrichment)
+                    .padding(.leading, 16)
+                    .padding(.trailing, 14)
+                    .padding(.top, 2)
+                    .padding(.bottom, 16)
+            }
+        }
+        .background {
+            if isCurrent(chapter) {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.13))
+            }
+        }
+    }
+
+    private func chapterTitle(_ chapter: VideoChapter) -> some View {
+        Text(chapter.title)
+            .font(.callout.weight(isCurrent(chapter) ? .semibold : .regular))
+            .foregroundStyle(.primary)
+            .multilineTextAlignment(.leading)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Reading typography for the chapter guide, modeled on Clearly's
+    /// preview: a serif reading face (New York on macOS), comfortable size,
+    /// and ~1.7 line height. Line spacing below is (lineHeight - 1) × size.
+    private enum GuideType {
+        static let body = Font.system(size: 14.5, weight: .regular, design: .serif)
+        static let bodyLineSpacing: CGFloat = 14.5 * 0.7
+        static let question = Font.system(size: 14.5, weight: .medium, design: .serif)
+        static let sectionLabel = Font.system(size: 10.5, weight: .semibold)
+        static let ordinal = Font.system(size: 12, weight: .semibold, design: .rounded)
+    }
+
+    private func enrichmentDetail(_ chapterEnrichment: ChapterEnrichment) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(ChapterEnrichmentLogic.displayText(chapterEnrichment.summary))
+                .font(GuideType.body)
+                .foregroundStyle(.primary)
+                .lineSpacing(GuideType.bodyLineSpacing)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+
+            if !chapterEnrichment.keyPoints.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(Array(chapterEnrichment.keyPoints.enumerated()), id: \.offset) { _, point in
+                        HStack(alignment: .firstTextBaseline, spacing: 9) {
+                            Circle()
+                                .fill(.tertiary)
+                                .frame(width: 4, height: 4)
+                                .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 5 }
+                            Text(ChapterEnrichmentLogic.displayText(point))
+                                .font(GuideType.body)
+                                .foregroundStyle(.primary.opacity(0.85))
+                                .lineSpacing(GuideType.bodyLineSpacing * 0.75)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+
+            if !chapterEnrichment.exercises.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("EXERCISES")
+                        .font(GuideType.sectionLabel)
+                        .kerning(1.1)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                    ForEach(Array(chapterEnrichment.exercises.enumerated()), id: \.offset) { index, exercise in
+                        exerciseView(exercise, index: index, chapterID: chapterEnrichment.chapterID)
+                    }
+                }
+            }
+        }
+    }
+
+    private func exerciseView(_ exercise: ChapterExercise, index: Int, chapterID: String) -> some View {
+        let solutionKey = "\(chapterID)#\(index)"
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Text("\(index + 1)")
+                    .font(GuideType.ordinal)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .background(Color.secondary.opacity(0.12), in: Circle())
+                    .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 5 }
+                Text(ChapterEnrichmentLogic.displayText(exercise.question))
+                    .font(GuideType.question)
+                    .foregroundStyle(.primary)
+                    .lineSpacing(GuideType.bodyLineSpacing * 0.75)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            if !exercise.solution.isEmpty {
+                let isRevealed = revealedSolutions.contains(solutionKey)
+                VStack(alignment: .leading, spacing: 6) {
+                    Button(isRevealed ? "Hide solution" : "Show solution") {
+                        toggleSolution(solutionKey)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(Color.accentColor)
+                    if isRevealed {
+                        Text(ChapterEnrichmentLogic.displayText(exercise.solution))
+                            .font(GuideType.body)
+                            .foregroundStyle(.primary.opacity(0.75))
+                            .lineSpacing(GuideType.bodyLineSpacing * 0.75)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                            .padding(.leading, 12)
+                            .overlay(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 1)
+                                    .fill(Color.accentColor.opacity(0.45))
+                                    .frame(width: 2)
+                            }
+                    }
+                }
+                .padding(.leading, 27)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var enrichmentFooter: some View {
+        Group {
+            switch activity {
+            case .running(let completed, let total):
+                HStack(spacing: 8) {
+                    ProgressView(value: Double(completed), total: Double(max(total, 1)))
+                        .progressViewStyle(.linear)
+                    Text("\(completed)/\(total)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Button {
+                        cancelEnrichment()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Cancel")
+                }
+            case .failed(let message):
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                    Spacer(minLength: 4)
+                    Button("Retry") {
+                        dismissFailure()
+                        enrich(false, nil)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.accentColor)
+                }
+            case nil:
+                if enrichment == nil {
+                    Button {
+                        enrich(false, nil)
+                    } label: {
+                        Label("Summaries & exercises", systemImage: "note.text")
+                            .font(.caption.weight(.medium))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .watchGlassButton()
+                    .help("Generate a summary and exercises for each chapter")
+                } else {
+                    HStack(spacing: 6) {
+                        Label("Chapter guide ready", systemImage: "note.text")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 4)
+                        Button("Regenerate") {
+                            regeneratePopoverShown = true
+                        }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.accentColor)
+                        .popover(isPresented: $regeneratePopoverShown, arrowEdge: .bottom) {
+                            regeneratePopover
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+    }
+
+    private var regeneratePopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Regenerate chapter guide")
+                .font(.headline)
+            Text("Optionally tell the model what to change — it will revise the existing guide, or rewrite it when that serves better.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("e.g. add more exercises, make summaries shorter…", text: $regenerateGuidance, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(2...5)
+                .frame(width: 280)
+                .onSubmit(submitRegenerate)
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    regeneratePopoverShown = false
+                }
+                Button(regenerateGuidance.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Regenerate from scratch" : "Regenerate") {
+                    submitRegenerate()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(14)
+    }
+
+    private func submitRegenerate() {
+        let guidance = regenerateGuidance.trimmingCharacters(in: .whitespacesAndNewlines)
+        regeneratePopoverShown = false
+        regenerateGuidance = ""
+        enrich(true, guidance.isEmpty ? nil : guidance)
+    }
+
+    private func toggleSolution(_ solutionKey: String) {
+        if revealedSolutions.contains(solutionKey) {
+            revealedSolutions.remove(solutionKey)
+        } else {
+            revealedSolutions.insert(solutionKey)
+        }
+    }
+
+    private func toggleExpanded(_ chapterID: String) {
+        if expandedChapters.contains(chapterID) {
+            expandedChapters.remove(chapterID)
+        } else {
+            expandedChapters.insert(chapterID)
+        }
     }
 
     private func isCurrent(_ chapter: VideoChapter) -> Bool {

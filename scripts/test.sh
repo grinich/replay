@@ -29,6 +29,12 @@ compile_and_run subtitle_parser \
     "$project_dir/Sources/Replay/VideoSubtitles.swift" \
     "$project_dir/tools/subtitle_parser_check.swift"
 
+compile_and_run chapter_enrichment \
+    "$project_dir/Sources/Replay/WatchItem.swift" \
+    "$project_dir/Sources/Replay/VideoSubtitles.swift" \
+    "$project_dir/Sources/Replay/ChapterEnrichment.swift" \
+    "$project_dir/tools/chapter_enrichment_check.swift"
+
 compile_and_run power_mode \
     "$project_dir/Sources/Replay/PowerModeMonitor.swift" \
     "$project_dir/tools/power_mode_check.swift"
