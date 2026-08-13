@@ -841,7 +841,10 @@ private struct VideoDetail: View {
                 .fixedSize()
             }
         }
-        .padding(.leading, sidebarCollapsed ? 154 : 14)
+        // NavigationSplitView keeps its native sidebar toggle in the detail
+        // title bar even while the sidebar is visible. Reserve the toggle's
+        // footprint here so long titles cannot render underneath it.
+        .padding(.leading, sidebarCollapsed ? 154 : 50)
         .padding(.trailing, 14)
         .frame(height: 56)
     }
