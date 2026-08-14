@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var urlText = ""
     @State private var isDropTarget = false
     @State private var itemToDelete: WatchItem?
+    @State private var renameRequestID: UUID?
     @State private var detailSelection: UUID?
     @State private var detailSelectionTask: Task<Void, Never>?
     @State private var knownItemIDs: Set<UUID> = []
@@ -141,7 +142,6 @@ struct ContentView: View {
                 queueList
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .ignoresSafeArea(.container, edges: .top)
         }
     }
 
@@ -157,10 +157,6 @@ struct ContentView: View {
             ScrollViewReader { proxy in
                 ScrollView(.vertical) {
                     LazyVStack(alignment: .leading, spacing: 4, pinnedViews: [.sectionHeaders]) {
-                        Color.clear
-                            .frame(height: 0)
-                            .id("queue-top")
-
                         if !queueItems.isEmpty {
                             ForEach(queueItems) { item in
                                 sidebarRow(item)
@@ -172,10 +168,6 @@ struct ContentView: View {
                                             )
                                         }
                                     }
-                                    .simultaneousGesture(
-                                        DragGesture(minimumDistance: 4, coordinateSpace: .named("queue-list"))
-                                            .onChanged { updateQueueDrag(item.id, at: $0.location) }
-                                    )
                             }
                         }
 
@@ -212,15 +204,6 @@ struct ContentView: View {
                         proxy.scrollTo(addedID, anchor: .top)
                     }
                 }
-                .onAppear {
-                    // A persisted selection can be far down the queue. The
-                    // list itself should nevertheless start at its real top
-                    // after every launch, with the normal eight-point inset
-                    // above the newest item.
-                    DispatchQueue.main.async {
-                        proxy.scrollTo("queue-top", anchor: .top)
-                    }
-                }
             }
         }
     }
@@ -230,7 +213,12 @@ struct ContentView: View {
             item: item,
             isSelected: store.selection == item.id,
             select: { store.selection = item.id },
-            rename: { store.rename(item.id, to: $0) }
+            renameRequested: renameRequestID == item.id,
+            rename: { store.rename(item.id, to: $0) },
+            finishRenameRequest: {
+                if renameRequestID == item.id { renameRequestID = nil }
+            },
+            reorder: { updateQueueDrag(item.id, at: $0) }
         )
         .equatable()
         .id(item.id)
@@ -243,6 +231,7 @@ struct ContentView: View {
                 Button("Retry Download") { store.startDownload(for: item.id) }
             }
             Button("Open Original") { store.openOriginal(item.id) }
+            Button("Rename") { renameRequestID = item.id }
             Divider()
             Button("Remove", role: .destructive) { itemToDelete = item }
         }
@@ -398,13 +387,18 @@ private struct QueueRow: View, Equatable {
     let item: WatchItem
     let isSelected: Bool
     let select: () -> Void
+    let renameRequested: Bool
     let rename: (String) -> Void
+    let finishRenameRequest: () -> Void
+    let reorder: (CGPoint) -> Void
     @State private var isEditingTitle = false
     @State private var draftTitle = ""
     @FocusState private var isTitleFocused: Bool
 
     static func == (lhs: QueueRow, rhs: QueueRow) -> Bool {
-        lhs.item == rhs.item && lhs.isSelected == rhs.isSelected
+        lhs.item == rhs.item &&
+            lhs.isSelected == rhs.isSelected &&
+            lhs.renameRequested == rhs.renameRequested
     }
 
     var body: some View {
@@ -434,6 +428,10 @@ private struct QueueRow: View, Equatable {
             }
 
             Spacer(minLength: 0)
+
+            if !item.isWatched {
+                reorderHandle
+            }
         }
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 8)
@@ -450,6 +448,9 @@ private struct QueueRow: View, Equatable {
         }
         .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         .onTapGesture(perform: select)
+        .onChange(of: renameRequested) { requested in
+            if requested { beginEditing() }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .accessibilityAction(.default, select)
@@ -483,15 +484,28 @@ private struct QueueRow: View, Equatable {
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
                 .contentShape(Rectangle())
-                .onTapGesture(count: 2, perform: beginEditing)
-                .help("Double-click to rename")
+                .help("Right-click to rename")
         }
     }
 
+    private var reorderHandle: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .frame(width: 28, height: 40)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 6, coordinateSpace: .named("queue-list"))
+                    .onChanged { reorder($0.location) }
+            )
+            .help("Drag to reorder")
+    }
+
     private func beginEditing() {
-        select()
+        guard !isEditingTitle else { return }
         draftTitle = item.title
         isEditingTitle = true
+        select()
         DispatchQueue.main.async {
             isTitleFocused = true
         }
@@ -507,6 +521,7 @@ private struct QueueRow: View, Equatable {
         }
         isEditingTitle = false
         isTitleFocused = false
+        finishRenameRequest()
     }
 
     private var icon: String {
