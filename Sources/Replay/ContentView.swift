@@ -1766,6 +1766,14 @@ private struct ChapterSidebar: View {
     @State private var revealedSolutions: Set<String> = []
     @State private var regeneratePopoverShown = false
     @State private var regenerateGuidance = ""
+    @AppStorage("chapterSidebarFontSize") private var sidebarFontSize = 14.5
+
+    private enum SidebarType {
+        static let defaultSize = 14.5
+        static let minimumSize = 11.5
+        static let maximumSize = 22.5
+        static let step = 1.0
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1795,6 +1803,10 @@ private struct ChapterSidebar: View {
 
             Divider()
 
+            fontSizeControls
+
+            Divider()
+
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 3) {
                     ForEach(chapters) { chapter in
@@ -1814,6 +1826,54 @@ private struct ChapterSidebar: View {
         .background(.ultraThinMaterial)
     }
 
+    private var fontSizeControls: some View {
+        HStack(spacing: 8) {
+            Text("Text size")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 8)
+
+            fontSizeButton("−", help: "Decrease sidebar text size", disabled: sidebarFontSize <= SidebarType.minimumSize) {
+                sidebarFontSize = max(SidebarType.minimumSize, sidebarFontSize - SidebarType.step)
+            }
+
+            Text("\(Int(sidebarFontSize.rounded()))")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+
+            fontSizeButton("+", help: "Increase sidebar text size", disabled: sidebarFontSize >= SidebarType.maximumSize) {
+                sidebarFontSize = min(SidebarType.maximumSize, sidebarFontSize + SidebarType.step)
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 46)
+    }
+
+    private func fontSizeButton(
+        _ label: String,
+        help: String,
+        disabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) { action() }
+        } label: {
+            Text(label)
+                .font(.system(size: 18, weight: .medium, design: .rounded))
+                .frame(width: 40, height: 40)
+                .contentShape(Rectangle())
+                .background(
+                    Color.primary.opacity(disabled ? 0.035 : 0.075),
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .help(help)
+    }
+
     @ViewBuilder
     private func chapterRow(_ chapter: VideoChapter) -> some View {
         let chapterEnrichment = enrichment?.enrichment(forChapterID: chapter.id)
@@ -1823,9 +1883,9 @@ private struct ChapterSidebar: View {
                     select(chapter)
                 } label: {
                     Text(formatTime(chapter.startTime))
-                        .font(.caption.monospacedDigit())
+                        .font(.system(size: max(10, sidebarFontSize - 2), design: .monospaced))
                         .foregroundStyle(isCurrent(chapter) ? Color.accentColor : Color.secondary)
-                        .frame(width: 48, alignment: .trailing)
+                        .frame(width: timestampColumnWidth, alignment: .trailing)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -1872,32 +1932,46 @@ private struct ChapterSidebar: View {
         }
     }
 
+    private var timestampColumnWidth: CGFloat {
+        48 + max(0, sidebarFontSize - SidebarType.defaultSize) * 1.5
+    }
+
     private func chapterTitle(_ chapter: VideoChapter) -> some View {
         Text(chapter.title)
-            .font(.callout.weight(isCurrent(chapter) ? .semibold : .regular))
+            .font(.system(size: sidebarFontSize, weight: isCurrent(chapter) ? .semibold : .regular))
             .foregroundStyle(.primary)
             .multilineTextAlignment(.leading)
-            .lineLimit(2)
+            .lineLimit(3)
             .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Reading typography for the chapter guide, modeled on Clearly's
     /// preview: a serif reading face (New York on macOS), comfortable size,
-    /// and ~1.7 line height. Line spacing below is (lineHeight - 1) × size.
-    private enum GuideType {
-        static let body = Font.system(size: 14.5, weight: .regular, design: .serif)
-        static let bodyLineSpacing: CGFloat = 14.5 * 0.7
-        static let question = Font.system(size: 14.5, weight: .medium, design: .serif)
-        static let sectionLabel = Font.system(size: 10.5, weight: .semibold)
-        static let ordinal = Font.system(size: 12, weight: .semibold, design: .rounded)
+    /// and ~1.7 line height. Every value follows the persisted sidebar size.
+    private var guideBodyFont: Font {
+        .system(size: sidebarFontSize, weight: .regular, design: .serif)
+    }
+
+    private var guideQuestionFont: Font {
+        .system(size: sidebarFontSize, weight: .medium, design: .serif)
+    }
+
+    private var guideLineSpacing: CGFloat { sidebarFontSize * 0.7 }
+
+    private var guideSectionLabelFont: Font {
+        .system(size: max(9.5, sidebarFontSize - 4), weight: .semibold)
+    }
+
+    private var guideOrdinalFont: Font {
+        .system(size: max(10, sidebarFontSize - 2.5), weight: .semibold, design: .rounded)
     }
 
     private func enrichmentDetail(_ chapterEnrichment: ChapterEnrichment) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(ChapterEnrichmentLogic.displayText(chapterEnrichment.summary))
-                .font(GuideType.body)
+                .font(guideBodyFont)
                 .foregroundStyle(.primary)
-                .lineSpacing(GuideType.bodyLineSpacing)
+                .lineSpacing(guideLineSpacing)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
 
@@ -1910,9 +1984,9 @@ private struct ChapterSidebar: View {
                                 .frame(width: 4, height: 4)
                                 .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 5 }
                             Text(ChapterEnrichmentLogic.displayText(point))
-                                .font(GuideType.body)
+                                .font(guideBodyFont)
                                 .foregroundStyle(.primary.opacity(0.85))
-                                .lineSpacing(GuideType.bodyLineSpacing * 0.75)
+                                .lineSpacing(guideLineSpacing * 0.75)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .textSelection(.enabled)
                         }
@@ -1923,7 +1997,7 @@ private struct ChapterSidebar: View {
             if !chapterEnrichment.exercises.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("EXERCISES")
-                        .font(GuideType.sectionLabel)
+                        .font(guideSectionLabelFont)
                         .kerning(1.1)
                         .foregroundStyle(.secondary)
                         .padding(.top, 4)
@@ -1940,16 +2014,16 @@ private struct ChapterSidebar: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 9) {
                 Text("\(index + 1)")
-                    .font(GuideType.ordinal)
+                    .font(guideOrdinalFont)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
                     .frame(width: 18, height: 18)
                     .background(Color.secondary.opacity(0.12), in: Circle())
                     .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 5 }
                 Text(ChapterEnrichmentLogic.displayText(exercise.question))
-                    .font(GuideType.question)
+                    .font(guideQuestionFont)
                     .foregroundStyle(.primary)
-                    .lineSpacing(GuideType.bodyLineSpacing * 0.75)
+                    .lineSpacing(guideLineSpacing * 0.75)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
@@ -1960,13 +2034,13 @@ private struct ChapterSidebar: View {
                         toggleSolution(solutionKey)
                     }
                     .buttonStyle(.plain)
-                    .font(.callout.weight(.medium))
+                    .font(.system(size: sidebarFontSize, weight: .medium))
                     .foregroundStyle(Color.accentColor)
                     if isRevealed {
                         Text(ChapterEnrichmentLogic.displayText(exercise.solution))
-                            .font(GuideType.body)
+                            .font(guideBodyFont)
                             .foregroundStyle(.primary.opacity(0.75))
-                            .lineSpacing(GuideType.bodyLineSpacing * 0.75)
+                            .lineSpacing(guideLineSpacing * 0.75)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                             .padding(.leading, 12)
