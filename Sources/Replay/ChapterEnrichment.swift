@@ -150,21 +150,26 @@ enum ChapterEnrichmentLogic {
           "keyPoints": ["2-5 short bullet strings with the concrete takeaways"],
           "exercises": [
             {
-              "question": "a specific exercise or comprehension question",
-              "solution": "a concise but complete solution or model answer"
+              "question": "a concrete application or problem-solving task",
+              "solution": "a worked, technically precise solution or model answer"
             }
           ]
         }
 
-        Rules:
-        - 2 to 4 exercises, ordered easiest to hardest.
-        - Exercises must be answerable from this chapter's content alone.
-        - Prefer concrete recall/application questions over vague reflection.
+        Exercise quality rules (HIGH PRIORITY):
+        - 2 to 4 exercises, ordered from a focused application to a harder synthesis or design task.
+        - NEVER ask the learner to recall the talk: no "what did the speaker say", "list/name/identify", "according to the speaker", or "describe the procedure" questions.
+        - Every exercise must require the learner to DO something with the chapter's ideas, not merely restate them.
+        - Silently classify the chapter before writing exercises. If it contains algorithms, code, mathematics, model architectures, training objectives, benchmarks, experimental methodology, systems, scientific mechanisms, or engineering trade-offs, treat it as TECHNICAL.
+        - For a TECHNICAL chapter, every exercise must be technical. Use tasks such as: trace a concrete example; derive or compute a result; write pseudocode; design an experiment or ablation; diagnose a failure; predict behavior after changing a variable; compare methods under a stated constraint; critique a benchmark; or design a system using the mechanism taught.
+        - Ground technical exercises in the actual named methods, quantities, equations, objectives, data flows, or failure modes in this transcript. Include enough scenario detail that the task can be solved without rewatching the talk.
+        - When the transcript lacks an explicit numeric example, invent only harmless exercise inputs or hypothetical scenarios; do not invent factual claims about the talk.
+        - Solutions should show the reasoning or intermediate steps, not just state the answer.
+        - For nontechnical material, still require transfer, analysis, or decision-making—never speaker recall.
+        - Exercises must be answerable using this chapter's content alone.
         - Mathematical notation is welcome where it helps: use simple inline \
         LaTeX delimited by $...$ (for example $2^{10}$ or $\\frac{a}{b}$). \
         Keep it simple; prefer plain text when math adds nothing.
-        - If the transcript contains numbers, formulas, code, or named \
-        techniques, use them in the exercises.
         - Keep the summary specific: name the actual ideas, not just topics.
         - Valid JSON only: escape newlines inside strings as \\n.
 
@@ -220,10 +225,15 @@ enum ChapterEnrichmentLogic {
             .filter { !$0.isEmpty }
         let exercises = (decoded.exercises ?? []).compactMap { exercise -> ChapterExercise? in
             let question = exercise.question.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !question.isEmpty else { return nil }
+            guard !question.isEmpty, !isRecallOnlyExercise(question) else { return nil }
             let solution = (exercise.solution ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !solution.isEmpty else { return nil }
             return ChapterExercise(question: question, solution: solution)
         }
+        // It is better to retry a chapter than persist a quiz made entirely of
+        // recall prompts. The model contract requires at least two substantive
+        // exercises, and this also catches truncated output.
+        guard exercises.count >= 2 else { return nil }
         return ChapterEnrichment(
             chapterID: chapterID,
             chapterTitle: chapterTitle,
@@ -232,6 +242,34 @@ enum ChapterEnrichmentLogic {
             exercises: exercises,
             generatedAt: generatedAt
         )
+    }
+
+    /// Rejects obvious lecture-recall prompts. This is deliberately narrow:
+    /// causal "why" questions can still demand real understanding, while
+    /// speaker-reporting, enumeration, and bare fact questions cannot.
+    static func isRecallOnlyExercise(_ question: String) -> Bool {
+        let normalized = question
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let appliedSignals = [
+            "given ", "suppose ", "consider ", "scenario", "would ",
+            "calculate", "compute", "derive", "design", "predict", "diagnose",
+            "debug", "trace", "construct", "implement", "pseudocode", "ablation",
+            "experiment", "compare", "evaluate", "critique", "modify", "trade-off"
+        ]
+        if appliedSignals.contains(where: normalized.contains) { return false }
+
+        let speakerRecall = [
+            "did the speaker", "does the speaker", "speaker's view", "speaker’s view",
+            "according to the speaker", "the speaker recommend", "the speaker mean"
+        ]
+        if speakerRecall.contains(where: normalized.contains) { return true }
+
+        let recallPrefixes = [
+            "what ", "who ", "when ", "where ", "which ", "list ", "name ",
+            "identify ", "state ", "recall ", "describe the ", "summarize the "
+        ]
+        return recallPrefixes.contains(where: normalized.hasPrefix)
     }
 
     /// Extracts the first balanced top-level JSON object from mixed output,

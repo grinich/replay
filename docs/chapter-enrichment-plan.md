@@ -96,7 +96,11 @@ small. Cached results are reused; a "Regenerate" action forces re-run
 
 Inputs: video title/author, chapter title + index + duration, the chapter's
 transcript slice (truncated to a token budget, e.g. ~12k chars, head+tail),
-and the list of all chapter titles for context.
+and the list of all chapter titles for context. The guide prompt classifies
+technical chapters and requires every exercise to apply the material through
+tracing, derivation, implementation, debugging, experiment design, benchmark
+critique, prediction, or engineering trade-offs. Speaker-recall and bare
+listing questions are forbidden and filtered during parsing.
 
 Output: **JSON only**, fenced, matching `ChapterEnrichment` fields — same
 "hard rules / required shape" style as `markdown_prompt_for_link` in the

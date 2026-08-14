@@ -86,9 +86,9 @@ struct ChapterEnrichmentCheck {
           "summary": "  The chapter defines FIFO queues.  ",
           "keyPoints": ["Queues are FIFO", "  ", "Stacks are LIFO"],
           "exercises": [
-            {"question": "What does FIFO mean?", "solution": "First in, first out."},
+            {"question": "Trace a FIFO queue through enqueue(A), enqueue(B), and dequeue().", "solution": "The queue becomes [A], then [A, B]; dequeue returns A and leaves [B]."},
             {"question": "   ", "solution": "ignored"},
-            {"question": "Name the opposite discipline.", "solution": null}
+            {"question": "Given jobs J1, J2, and J3 arriving in that order, compare FIFO execution with a LIFO stack.", "solution": "FIFO runs J1, J2, J3; LIFO runs J3, J2, J1, so the disciplines reverse the service order."}
           ]
         }
         """
@@ -99,8 +99,20 @@ struct ChapterEnrichmentCheck {
         precondition(parsed.summary == "The chapter defines FIFO queues.")
         precondition(parsed.keyPoints == ["Queues are FIFO", "Stacks are LIFO"])
         precondition(parsed.exercises.count == 2)
-        precondition(parsed.exercises[0].solution == "First in, first out.")
-        precondition(parsed.exercises[1].solution.isEmpty)
+        precondition(parsed.exercises[0].solution.contains("dequeue returns A"))
+        precondition(parsed.exercises[1].solution.contains("reverse the service order"))
+
+        let recallOnly = """
+        {"summary":"S","exercises":[
+          {"question":"What two capabilities did the speaker identify?","solution":"A and B."},
+          {"question":"Describe the benchmark procedure.","solution":"Adapt and average."}
+        ]}
+        """
+        precondition(ChapterEnrichmentLogic.parse(output: recallOnly, chapterID: "x", chapterTitle: "X") == nil)
+        precondition(ChapterEnrichmentLogic.isRecallOnlyExercise("According to the speaker, what is VTAB?"))
+        precondition(ChapterEnrichmentLogic.isRecallOnlyExercise("List the stages of CLIP training."))
+        precondition(!ChapterEnrichmentLogic.isRecallOnlyExercise("Given a 3×3 similarity matrix, compute the CLIP loss."))
+        precondition(!ChapterEnrichmentLogic.isRecallOnlyExercise("Design an ablation that isolates the effect of captioning loss."))
 
         precondition(ChapterEnrichmentLogic.parse(output: "not json", chapterID: "x", chapterTitle: "X") == nil)
         precondition(ChapterEnrichmentLogic.parse(output: "{\"summary\": \"  \"}", chapterID: "x", chapterTitle: "X") == nil)
@@ -180,7 +192,10 @@ struct ChapterEnrichmentCheck {
             chapterTitle: "Main",
             summary: "Old summary",
             keyPoints: ["old point"],
-            exercises: [ChapterExercise(question: "old q", solution: "old a")],
+            exercises: [
+                ChapterExercise(question: "Design an experiment using the old idea.", solution: "Run the experiment and compare outcomes."),
+                ChapterExercise(question: "Given an edge case, diagnose the old method.", solution: "Trace the edge case and identify the failure.")
+            ],
             generatedAt: Date()
         )
         let prompt = ChapterEnrichmentLogic.prompt(
@@ -198,7 +213,7 @@ struct ChapterEnrichmentCheck {
         precondition(prompt.contains("add more exercises"))
         precondition(prompt.contains("PREVIOUS VERSION OF THIS CHAPTER'S GUIDE"))
         precondition(prompt.contains("Old summary"))
-        precondition(prompt.contains("old q"))
+        precondition(prompt.contains("Design an experiment using the old idea."))
 
         // Without guidance/previous, no revision blocks appear.
         let plain = ChapterEnrichmentLogic.prompt(
@@ -217,7 +232,7 @@ struct ChapterEnrichmentCheck {
         let json = ChapterEnrichmentLogic.previousVersionJSON(previous)
         let reparsed = ChapterEnrichmentLogic.parse(output: json, chapterID: "x", chapterTitle: "X")
         precondition(reparsed?.summary == "Old summary")
-        precondition(reparsed?.exercises.first?.question == "old q")
+        precondition(reparsed?.exercises.first?.question == "Design an experiment using the old idea.")
     }
 
     static func checkPersistenceRoundTrip() {
