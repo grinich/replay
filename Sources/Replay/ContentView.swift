@@ -6,6 +6,8 @@ struct ContentView: View {
     @EnvironmentObject private var store: QueueStore
     @EnvironmentObject private var inbox: URLInbox
     @State private var urlText = ""
+    @State private var searchText = ""
+    @State private var isSearchPresented = false
     @State private var isDropTarget = false
     @State private var itemToDelete: WatchItem?
     @State private var renameRequestID: UUID?
@@ -17,6 +19,7 @@ struct ContentView: View {
     @State private var windowWidth: CGFloat = 1320
     @State private var urlBarFrame: CGRect = .zero
     @FocusState private var isURLFieldFocused: Bool
+    @FocusState private var isSearchFieldFocused: Bool
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -123,19 +126,7 @@ struct ContentView: View {
             .allowsHitTesting(false)
 
             VStack(spacing: 0) {
-                DropAndAddBar(
-                    urlText: $urlText,
-                    isDropTarget: $isDropTarget,
-                    isURLFieldFocused: $isURLFieldFocused,
-                    submit: submitURL,
-                    receiveProviders: receiveProviders
-                )
-                .padding(.leading, 82)
-                .padding(.trailing, 54)
-                // NavigationSplitView supplies the native title-bar inset. Keep
-                // the add field in the unshifted center of that header so it
-                // shares a baseline with the traffic-light cluster.
-                .frame(height: 46)
+                sidebarHeader
 
                 Divider()
 
@@ -145,13 +136,99 @@ struct ContentView: View {
         }
     }
 
+    private var sidebarHeader: some View {
+        GeometryReader { geometry in
+            let expandedWidth = max(120, geometry.size.width - 136)
+            HStack(spacing: 28) {
+                Group {
+                    if isSearchPresented {
+                        SidebarSearchBar(
+                            text: $searchText,
+                            isFocused: $isSearchFieldFocused,
+                            close: closeSearch
+                        )
+                    } else {
+                        sidebarHeaderIconButton(
+                            systemImage: "magnifyingglass",
+                            help: "Search video titles (⌘F)",
+                            action: openSearch
+                        )
+                        .keyboardShortcut("f", modifiers: .command)
+                    }
+                }
+                .frame(width: isSearchPresented ? expandedWidth : 40)
+
+                Group {
+                    if isSearchPresented {
+                        sidebarHeaderIconButton(
+                            systemImage: "link",
+                            help: "Add a video",
+                            action: activateURLInput
+                        )
+                    } else {
+                        DropAndAddBar(
+                            urlText: $urlText,
+                            isDropTarget: $isDropTarget,
+                            isURLFieldFocused: $isURLFieldFocused,
+                            submit: submitURL,
+                            receiveProviders: receiveProviders
+                        )
+                    }
+                }
+                .frame(width: isSearchPresented ? 40 : expandedWidth)
+            }
+            .padding(.leading, 14)
+            .frame(maxHeight: .infinity)
+            .animation(.easeInOut(duration: 0.22), value: isSearchPresented)
+        }
+        .frame(height: 46)
+    }
+
+    private func sidebarHeaderIconButton(
+        systemImage: String,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 40, height: 32)
+                .contentShape(Rectangle())
+                .watchGlass(
+                    .clear,
+                    interactive: true,
+                    in: RoundedRectangle(cornerRadius: 15, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.07))
+                }
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    private var normalizedSearchQuery: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func matchesSearch(_ item: WatchItem) -> Bool {
+        normalizedSearchQuery.isEmpty || item.title.localizedCaseInsensitiveContains(normalizedSearchQuery)
+    }
+
     @ViewBuilder
     private var queueList: some View {
-        let queueItems = store.queueItems
-        let archivedItems = store.archivedItems
+        let allQueueItems = store.queueItems
+        let allArchivedItems = store.archivedItems
+        let queueItems = allQueueItems.filter(matchesSearch)
+        let archivedItems = allArchivedItems.filter(matchesSearch)
 
-        if queueItems.isEmpty && archivedItems.isEmpty {
+        if allQueueItems.isEmpty && allArchivedItems.isEmpty {
             SidebarEmptyState()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if queueItems.isEmpty && archivedItems.isEmpty && !normalizedSearchQuery.isEmpty {
+            SidebarSearchEmptyState(query: normalizedSearchQuery)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollViewReader { proxy in
@@ -273,6 +350,32 @@ struct ContentView: View {
             await Task.yield()
             guard !Task.isCancelled, store.selection == selectedID else { return }
             detailSelection = selectedID
+        }
+    }
+
+    private func openSearch() {
+        isURLFieldFocused = false
+        withAnimation(.easeInOut(duration: 0.22)) {
+            isSearchPresented = true
+        }
+        DispatchQueue.main.async {
+            isSearchFieldFocused = true
+        }
+    }
+
+    private func closeSearch() {
+        isSearchFieldFocused = false
+        searchText = ""
+        withAnimation(.easeInOut(duration: 0.22)) {
+            isSearchPresented = false
+        }
+        NSApp.keyWindow?.makeFirstResponder(nil)
+    }
+
+    private func activateURLInput() {
+        closeSearch()
+        DispatchQueue.main.async {
+            isURLFieldFocused = true
         }
     }
 
@@ -634,6 +737,26 @@ private struct QueueThumbnail: View {
         return hours > 0
             ? String(format: "%d:%02d:%02d", hours, minutes, remaining)
             : String(format: "%d:%02d", minutes, remaining)
+    }
+}
+
+private struct SidebarSearchEmptyState: View {
+    let query: String
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 25, weight: .light))
+                .foregroundStyle(.secondary)
+            Text("No matching videos")
+                .font(.headline)
+            Text("No titles contain “\(query)”. Press Escape to show the full list.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 210)
+        }
+        .padding()
     }
 }
 
@@ -2252,6 +2375,46 @@ private struct ChapterSidebar: View {
         return hours > 0
             ? String(format: "%d:%02d:%02d", hours, minutes, remaining)
             : String(format: "%d:%02d", minutes, remaining)
+    }
+}
+
+private struct SidebarSearchBar: View {
+    @Binding var text: String
+    var isFocused: FocusState<Bool>.Binding
+    let close: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            TextField("Search video titles", text: $text)
+                .textFieldStyle(.plain)
+                .focused(isFocused)
+                .onExitCommand(perform: close)
+
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+            }
+            .watchGlassButton(prominent: true)
+            .controlSize(.small)
+            .keyboardShortcut(.cancelAction)
+            .help("Close search")
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 7)
+        .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32)
+        .watchGlass(
+            .clear,
+            interactive: true,
+            in: RoundedRectangle(cornerRadius: 15, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.07))
+        }
     }
 }
 
