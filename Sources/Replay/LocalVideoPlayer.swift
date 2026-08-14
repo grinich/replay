@@ -1232,7 +1232,15 @@ struct LocalVideoPlayer: NSViewRepresentable {
             panel.hasShadow = true
             panel.animationBehavior = .none
             panel.isReleasedWhenClosed = false
-            panel.contentView = floatingView
+
+            // Order a plain host onscreen before inserting AVPlayerView. On
+            // macOS 27, ordering a window that already contains AVPlayerView's
+            // NSRemoteView can raise an Objective-C ViewBridge exception and
+            // abort the process during app deactivation.
+            let panelHost = NSView(frame: NSRect(origin: .zero, size: FloatingPlayerLayout.size))
+            panelHost.wantsLayer = true
+            panelHost.layer?.backgroundColor = NSColor.black.cgColor
+            panel.contentView = panelHost
             floatingView.onHoverChanged = { [weak panel] isHovering in
                 panel?.standardWindowButton(.closeButton)?.isHidden = !isHovering
             }
@@ -1246,16 +1254,21 @@ struct LocalVideoPlayer: NSViewRepresentable {
                 ?? NSRect(origin: .zero, size: FloatingPlayerLayout.size)
             panel.setFrame(FloatingPlayerLayout.frame(in: visibleFrame), display: false)
 
-            // Move the existing player output only after the panel is fully
-            // configured. The panel is shown at its final location, so the sole
-            // transition is opacity—there is never a position animation.
-            playerView?.playerLayer.player = nil
-            fullscreenPlayerView?.playerLayer.player = nil
-            floatingView.player = player
+            // Show the empty host at its final location first, then move the
+            // existing player output into it. The sole transition is opacity;
+            // there is never a position animation or a remote view present
+            // while AppKit orders the panel onscreen.
             backgroundPanel = panel
             backgroundPlayerView = floatingView
             panel.alphaValue = 0
             panel.orderFrontRegardless()
+
+            floatingView.frame = panelHost.bounds
+            floatingView.autoresizingMask = [.width, .height]
+            panelHost.addSubview(floatingView)
+            playerView?.playerLayer.player = nil
+            fullscreenPlayerView?.playerLayer.player = nil
+            floatingView.player = player
 
             let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.15
             guard duration > 0 else {
