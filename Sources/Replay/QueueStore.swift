@@ -484,6 +484,17 @@ final class QueueStore: ObservableObject {
         return false
     }
 
+    /// Creator chapters always win. A generated outline is only displayed for
+    /// videos whose source metadata did not contain chapters.
+    func displayChapters(for item: WatchItem) -> [VideoChapter] {
+        if !item.availableChapters.isEmpty { return item.availableChapters }
+        return enrichments[item.id]?.generatedChapters ?? []
+    }
+
+    func canShowChapterSidebar(for item: WatchItem) -> Bool {
+        !displayChapters(for: item).isEmpty || item.state == .ready
+    }
+
     func enrichChapters(for id: UUID, force: Bool = false, guidance: String? = nil) {
         guard let item = item(with: id), item.state == .ready, !isEnriching(id) else { return }
         guard item.subtitleFileURL != nil else {
@@ -495,7 +506,7 @@ final class QueueStore: ObservableObject {
         // With guidance, the previous guide is context for revision; a plain
         // force regenerates from scratch.
         let existing = (force && revisionGuidance == nil) ? nil : enrichments[id]
-        let chapterCount = max(1, item.availableChapters.count)
+        let chapterCount = max(1, displayChapters(for: item).count)
         enrichmentActivity[id] = .running(completed: 0, total: chapterCount)
 
         let workDirectory = enrichmentFileURL(for: id).deletingLastPathComponent()

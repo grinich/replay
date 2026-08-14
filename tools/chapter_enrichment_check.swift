@@ -8,6 +8,8 @@ struct ChapterEnrichmentCheck {
         checkTruncation()
         checkJSONExtraction()
         checkOutputParsing()
+        checkGeneratedChapterPlanning()
+        checkGeneratedChapterFallback()
         checkErrorSummary()
         checkMathRendering()
         checkRevisionPrompt()
@@ -131,6 +133,81 @@ struct ChapterEnrichmentCheck {
         precondition(prompt.contains("Chapter 2 of 3: Main"))
         precondition(prompt.contains("single JSON object"))
         precondition(prompt.contains("Author: unknown"))
+        precondition(prompt.contains("every exercise must be technical"))
+        precondition(prompt.contains("NEVER ask the learner to recall the talk"))
+        precondition(prompt.contains("design an experiment or ablation"))
+    }
+
+    static func checkGeneratedChapterPlanning() {
+        let planningCues = stride(from: 0.0, through: 1_800.0, by: 60.0).map {
+            VideoSubtitleCue(startTime: $0, endTime: $0 + 20, text: "topic at \(Int($0))")
+        }
+        let transcript = ChapterEnrichmentLogic.timestampedTranscript(cues: planningCues)
+        precondition(transcript.contains("[00:00] topic at 0"))
+        precondition(transcript.contains("[30:00] topic at 1800"))
+
+        let prompt = ChapterEnrichmentLogic.chapterPlanningPrompt(
+            videoTitle: "A long lesson",
+            videoAuthor: "Teacher",
+            cues: planningCues,
+            videoDuration: 1_820
+        )
+        precondition(prompt.contains("semantic chapters"))
+        precondition(prompt.contains("startTime"))
+        precondition(prompt.contains("A long lesson"))
+        precondition(prompt.contains("one coherent teachable unit"))
+        precondition(prompt.contains("algorithm, objective, architecture, benchmark"))
+        precondition(prompt.contains("between unrelated Q&A topics"))
+
+        let output = """
+        Here is the outline:
+        {"chapters":[
+          {"title":"Opening idea","startTime":12},
+          {"title":"Core technique","startTime":603},
+          {"title":"Worked examples","startTime":1192}
+        ]}
+        """
+        guard let generated = ChapterEnrichmentLogic.parseGeneratedChapters(
+            output: output,
+            cues: planningCues,
+            videoDuration: 1_820
+        ) else {
+            preconditionFailure("Expected a valid generated outline")
+        }
+        precondition(generated.map(\.title) == ["Opening idea", "Core technique", "Worked examples"])
+        precondition(generated.map(\.startTime) == [0, 600, 1_200])
+        precondition(generated[0].endTime == 600)
+        precondition(generated.last?.endTime == 1_820)
+
+        // A single chapter cannot cover a long video because it would exceed
+        // the planner's maximum chapter duration.
+        let sparse = "{\"chapters\":[{\"title\":\"Everything\",\"startTime\":0}]}"
+        precondition(ChapterEnrichmentLogic.parseGeneratedChapters(
+            output: sparse,
+            cues: planningCues,
+            videoDuration: 1_820
+        ) == nil)
+        precondition(ChapterEnrichmentLogic.parseGeneratedChapters(
+            output: "not json",
+            cues: planningCues,
+            videoDuration: 1_820
+        ) == nil)
+    }
+
+    static func checkGeneratedChapterFallback() {
+        let planningCues = stride(from: 0.0, through: 1_400.0, by: 20.0).map {
+            VideoSubtitleCue(startTime: $0, endTime: $0 + 10, text: "cue \(Int($0))")
+        }
+        let fallback = ChapterEnrichmentLogic.fallbackGeneratedChapters(
+            cues: planningCues,
+            videoDuration: 1_440
+        )
+        precondition(fallback.count == 4)
+        precondition(fallback.map(\.title) == ["Part 1", "Part 2", "Part 3", "Part 4"])
+        precondition(fallback.first?.startTime == 0)
+        precondition(fallback.last?.endTime == 1_440)
+        precondition(Set(planningCues.map(\.startTime)).contains(fallback[1].startTime))
+        precondition(ChapterEnrichmentLogic.fallbackGeneratedChapters(cues: [], videoDuration: nil).isEmpty)
     }
 
     static func checkErrorSummary() {
@@ -249,6 +326,9 @@ struct ChapterEnrichmentCheck {
                     exercises: [ChapterExercise(question: "q", solution: "a")],
                     generatedAt: Date()
                 )
+            ],
+            generatedChapters: [
+                VideoChapter(title: "Generated intro", startTime: 0, endTime: 30)
             ]
         )
         let dir = FileManager.default.temporaryDirectory
@@ -267,6 +347,7 @@ struct ChapterEnrichmentCheck {
         precondition(loaded.chapters.map(\.keyPoints) == enrichment.chapters.map(\.keyPoints))
         precondition(loaded.enrichment(forChapterID: "0.0-Intro")?.summary == "S")
         precondition(loaded.enrichment(forChapterID: "missing") == nil)
+        precondition(loaded.generatedChapters?.first?.title == "Generated intro")
 
         // Unknown versions are rejected rather than misread.
         var future = enrichment

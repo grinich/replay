@@ -46,7 +46,7 @@ struct ContentView: View {
                     if width < 1160,
                        columnVisibility != .detailOnly,
                        let selectedItem = store.selectedItem,
-                       !selectedItem.availableChapters.isEmpty {
+                       store.canShowChapterSidebar(for: selectedItem) {
                         withAnimation(.easeInOut(duration: 0.22)) {
                             columnVisibility = .detailOnly
                         }
@@ -770,13 +770,25 @@ private struct VideoDetail: View {
             }
     }
 
+    private var displayedChapters: [VideoChapter] {
+        store.displayChapters(for: item)
+    }
+
+    private var hasChapterSidebar: Bool {
+        store.canShowChapterSidebar(for: item)
+    }
+
+    private var usesGeneratedChapters: Bool {
+        item.availableChapters.isEmpty && !displayedChapters.isEmpty
+    }
+
     private var usesCompactToolbarActions: Bool {
-        !item.availableChapters.isEmpty
+        hasChapterSidebar
     }
 
     @ViewBuilder
     private var chapterLayout: some View {
-        if item.availableChapters.isEmpty {
+        if !hasChapterSidebar {
             centerPane
         } else if #available(macOS 14.0, *) {
             centerPane
@@ -830,7 +842,7 @@ private struct VideoDetail: View {
             }
             .fixedSize()
 
-            if !item.availableChapters.isEmpty, !chaptersPresented {
+            if hasChapterSidebar, !chaptersPresented {
                 TitlebarInteractiveHost {
                     Button(action: toggleChapters) {
                         Image(systemName: "sidebar.trailing")
@@ -897,7 +909,7 @@ private struct VideoDetail: View {
                         PlaybackControls(
                             snapshot: playback,
                             knownDuration: item.duration,
-                            chapters: item.availableChapters,
+                            chapters: displayedChapters,
                             togglePlayback: { PlaybackCommandCenter.shared.togglePlayback() },
                             skip: { PlaybackCommandCenter.shared.skip(by: $0) },
                             seek: seekToTime,
@@ -919,9 +931,11 @@ private struct VideoDetail: View {
 
     private var chapterSidebar: some View {
         ChapterSidebar(
-            chapters: item.availableChapters,
+            chapters: displayedChapters,
             currentTime: playback.currentTime,
             isPresented: chaptersPresented,
+            usesGeneratedChapters: usesGeneratedChapters,
+            hasSubtitles: item.subtitleFileURL != nil,
             enrichment: store.enrichments[item.id],
             activity: store.enrichmentActivity[item.id],
             canEnrich: item.state == .ready && item.subtitleFileURL != nil,
@@ -1133,7 +1147,7 @@ private struct VideoDetail: View {
     }
 
     private var prefersOneSidePane: Bool {
-        windowWidth < 1160 && !item.availableChapters.isEmpty
+        windowWidth < 1160 && hasChapterSidebar
     }
 
     private func collapseSidebarForNarrowChapterLayoutIfNeeded() {
@@ -1753,6 +1767,8 @@ private struct ChapterSidebar: View {
     let chapters: [VideoChapter]
     let currentTime: Double
     let isPresented: Bool
+    let usesGeneratedChapters: Bool
+    let hasSubtitles: Bool
     let enrichment: VideoEnrichment?
     let activity: QueueStore.EnrichmentActivity?
     let canEnrich: Bool
@@ -1778,14 +1794,19 @@ private struct ChapterSidebar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                Label("Chapters", systemImage: "list.bullet.rectangle")
-                    .font(.headline.weight(.semibold))
-                Text("\(chapters.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(Color.secondary.opacity(0.1), in: Capsule())
+                Label(
+                    chapters.isEmpty ? "Chapter guide" : (usesGeneratedChapters ? "Generated chapters" : "Chapters"),
+                    systemImage: "list.bullet.rectangle"
+                )
+                .font(.headline.weight(.semibold))
+                if !chapters.isEmpty {
+                    Text("\(chapters.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.secondary.opacity(0.1), in: Capsule())
+                }
                 Spacer(minLength: 8)
                 if isPresented {
                     TitlebarInteractiveHost {
@@ -1808,13 +1829,33 @@ private struct ChapterSidebar: View {
             Divider()
 
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 3) {
-                    ForEach(chapters) { chapter in
-                        chapterRow(chapter)
+                if chapters.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "list.bullet.rectangle")
+                            .font(.system(size: 28, weight: .light))
+                            .foregroundStyle(Color.accentColor)
+                        Text(hasSubtitles ? "No creator chapters" : "No chapters or subtitles")
+                            .font(.system(size: sidebarFontSize + 2, weight: .semibold))
+                        Text(hasSubtitles
+                             ? "Replay can find topic boundaries in the offline subtitles, then create notes and exercises for each section."
+                             : "Replay needs offline subtitles before it can generate chapters and a study guide.")
+                            .font(.system(size: sidebarFontSize))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 36)
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 3) {
+                        ForEach(chapters) { chapter in
+                            chapterRow(chapter)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 8)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 8)
             }
             .scrollIndicators(.hidden)
 
@@ -2095,16 +2136,19 @@ private struct ChapterSidebar: View {
                     .foregroundStyle(Color.accentColor)
                 }
             case nil:
-                if enrichment == nil {
+                if enrichment == nil || chapters.isEmpty {
                     Button {
                         enrich(false, nil)
                     } label: {
-                        Label("Summaries & exercises", systemImage: "note.text")
-                            .font(.caption.weight(.medium))
-                            .frame(maxWidth: .infinity)
+                        Label(
+                            chapters.isEmpty ? "Generate chapters & guide" : "Summaries & exercises",
+                            systemImage: chapters.isEmpty ? "list.bullet.rectangle" : "note.text"
+                        )
+                        .font(.caption.weight(.medium))
+                        .frame(maxWidth: .infinity)
                     }
                     .watchGlassButton()
-                    .help("Generate a summary and exercises for each chapter")
+                    .help(chapters.isEmpty ? "Find chapters and generate a study guide from subtitles" : "Generate a summary and exercises for each chapter")
                 } else {
                     HStack(spacing: 6) {
                         Label("Chapter guide ready", systemImage: "note.text")

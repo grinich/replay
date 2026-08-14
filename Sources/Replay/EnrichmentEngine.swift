@@ -1,9 +1,10 @@
 import Foundation
 
-/// Generates per-chapter summaries and exercises by running the pi coding
-/// agent through the bundled Deno runtime (`deno run npm:...`), one
-/// subprocess per chapter with bounded concurrency. Results are persisted by
-/// the caller; this engine only orchestrates subprocesses and parsing.
+/// Generates chapter outlines, summaries, and exercises by running the pi
+/// coding agent through the bundled Deno runtime (`deno run npm:...`). Videos
+/// without source chapters get one planning subprocess first; guide generation
+/// then uses one subprocess per chapter with bounded concurrency. Results are
+/// persisted by the caller; this engine only orchestrates and parses.
 final class EnrichmentEngine {
     struct Progress {
         let completedChapters: Int
@@ -145,15 +146,36 @@ final class EnrichmentEngine {
         }
         let deno = try requiredTool(named: "deno")
 
-        // Videos without creator chapters are treated as one whole-video chapter.
-        let chapters = item.availableChapters.isEmpty
-            ? [VideoChapter(title: item.title, startTime: 0, endTime: item.duration)]
-            : item.availableChapters
-
         try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: denoCacheDirectory, withIntermediateDirectories: true)
 
+        let generatedChapters: [VideoChapter]?
+        let chapters: [VideoChapter]
+        if item.availableChapters.isEmpty {
+            if let persisted = existing?.generatedChapters, !persisted.isEmpty {
+                generatedChapters = persisted
+                chapters = persisted
+            } else {
+                let planned = generateChapterOutline(
+                    item: item,
+                    cues: track.cues,
+                    deno: deno,
+                    workDirectory: workDirectory,
+                    denoCacheDirectory: denoCacheDirectory
+                )
+                generatedChapters = planned
+                chapters = planned
+            }
+        } else {
+            generatedChapters = nil
+            chapters = item.availableChapters
+        }
+        guard !chapters.isEmpty else {
+            throw EngineError.failed("The subtitle track was too short to create chapters.")
+        }
+
         let totalChapters = chapters.count
+        onProgress(Progress(completedChapters: 0, totalChapters: totalChapters))
         let stateLock = NSLock()
         var results: [Int: ChapterEnrichment] = [:]
         var failures: [Int: String] = [:]
@@ -218,9 +240,45 @@ final class EnrichmentEngine {
             version: VideoEnrichment.currentVersion,
             itemID: item.id,
             generatedAt: Date(),
-            chapters: ordered
+            chapters: ordered,
+            generatedChapters: generatedChapters
         )
         return Outcome(enrichment: enrichment, failedChapterTitles: failedTitles)
+    }
+
+    private func generateChapterOutline(
+        item: WatchItem,
+        cues: [VideoSubtitleCue],
+        deno: URL,
+        workDirectory: URL,
+        denoCacheDirectory: URL
+    ) -> [VideoChapter] {
+        let prompt = ChapterEnrichmentLogic.chapterPlanningPrompt(
+            videoTitle: item.title,
+            videoAuthor: item.author,
+            cues: cues,
+            videoDuration: item.duration
+        )
+        let result = runPi(
+            prompt: prompt,
+            itemID: item.id,
+            slug: "chapter-plan",
+            deno: deno,
+            workDirectory: workDirectory,
+            denoCacheDirectory: denoCacheDirectory
+        )
+        if case .success(let output) = result,
+           let chapters = ChapterEnrichmentLogic.parseGeneratedChapters(
+               output: output,
+               cues: cues,
+               videoDuration: item.duration
+           ) {
+            return chapters
+        }
+        return ChapterEnrichmentLogic.fallbackGeneratedChapters(
+            cues: cues,
+            videoDuration: item.duration
+        )
     }
 
     private func enrichChapter(
@@ -258,6 +316,38 @@ final class EnrichmentEngine {
             guidance: guidance
         )
         let slug = String(format: "chapter-%02d", chapterIndex + 1)
+        switch runPi(
+            prompt: prompt,
+            itemID: itemID,
+            slug: slug,
+            deno: deno,
+            workDirectory: workDirectory,
+            denoCacheDirectory: denoCacheDirectory
+        ) {
+        case .success(let output):
+            guard let enrichment = ChapterEnrichmentLogic.parse(
+                output: output,
+                chapterID: chapter.id,
+                chapterTitle: chapter.title
+            ) else {
+                return .failure(EngineError.failed("Could not parse the model output for “\(chapter.title)”. See \(slug).stdout.txt."))
+            }
+            return .success(enrichment)
+        case .failure(let error):
+            return .failure(error)
+        }
+    }
+
+    /// Runs one headless, hermetic pi subprocess and records its prompt and
+    /// streams beside the enrichment output for diagnosis.
+    private func runPi(
+        prompt: String,
+        itemID: UUID,
+        slug: String,
+        deno: URL,
+        workDirectory: URL,
+        denoCacheDirectory: URL
+    ) -> Result<String, Error> {
         let promptFile = workDirectory.appendingPathComponent("\(slug).prompt.md")
         let stderrFile = workDirectory.appendingPathComponent("\(slug).stderr.txt")
         let stdoutFile = workDirectory.appendingPathComponent("\(slug).stdout.txt")
@@ -269,9 +359,8 @@ final class EnrichmentEngine {
 
         let process = Process()
         process.executableURL = deno
-        // Headless, hermetic pi run: no session, no extensions, no skills, no
-        // tools. Extensions in particular can open WebSockets, which crash
-        // under Deno's npm compatibility layer.
+        // No session, extensions, skills, context, or tools. The subprocess
+        // only transforms the supplied transcript into structured JSON.
         var arguments = [
             "run", "-A", "--quiet", Configuration.piPackage,
             "-p", "--no-session", "-ne", "--no-skills",
@@ -295,7 +384,6 @@ final class EnrichmentEngine {
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
-
         do {
             try process.run()
         } catch {
@@ -303,13 +391,11 @@ final class EnrichmentEngine {
         }
         register(process, for: itemID)
 
-        // Watchdog: kill hung sub-agents so the queue always finishes.
         let watchdog = DispatchWorkItem { [weak process] in process?.terminate() }
         DispatchQueue.global(qos: .utility).asyncAfter(
             deadline: .now() + Self.chapterTimeout,
             execute: watchdog
         )
-
         let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
         let stderrData = stderr.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
@@ -317,26 +403,17 @@ final class EnrichmentEngine {
         unregister(process, for: itemID)
 
         let output = String(decoding: stdoutData, as: UTF8.self)
+        let stderrText = String(decoding: stderrData, as: UTF8.self)
         try? output.write(to: stdoutFile, atomically: true, encoding: .utf8)
-        try? String(decoding: stderrData, as: UTF8.self).write(to: stderrFile, atomically: true, encoding: .utf8)
+        try? stderrText.write(to: stderrFile, atomically: true, encoding: .utf8)
 
-        if isCancelled(itemID: itemID) {
-            return .failure(EngineError.cancelled)
-        }
+        if isCancelled(itemID: itemID) { return .failure(EngineError.cancelled) }
         guard process.terminationStatus == 0 else {
-            let stderrText = String(decoding: stderrData, as: UTF8.self)
             let detail = ChapterEnrichmentLogic.errorSummary(fromStderr: stderrText)
                 ?? "pi exited with status \(process.terminationStatus)"
             return .failure(EngineError.failed(detail))
         }
-        guard let enrichment = ChapterEnrichmentLogic.parse(
-            output: output,
-            chapterID: chapter.id,
-            chapterTitle: chapter.title
-        ) else {
-            return .failure(EngineError.failed("Could not parse the model output for “\(chapter.title)”. See \(stdoutFile.lastPathComponent)."))
-        }
-        return .success(enrichment)
+        return .success(output)
     }
 
     // MARK: - Helpers

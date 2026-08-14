@@ -24,13 +24,17 @@
 >   WebSockets, which also crash under Deno).
 > - Enrichment JSON lives at `Application Support/Replay/Enrichment/<item-id>/enrichment.json`
 >   with per-chapter prompt/stdout/stderr files beside it for debugging.
+>   Videos without creator chapters first run `chapter-plan.prompt.md` through
+>   pi; the validated generated outline is persisted in the same JSON.
 >   The Deno npm cache is pinned to `Application Support/Replay/DenoCache`.
 
 ## Goal
 
-For any downloaded video with chapters, generate a **small summary and a few
+For any downloaded video with subtitles, generate a **small summary and a few
 exercises per chapter**, viewable inline in the chapter sidebar, fully offline
-after generation. Modeled on `~/Documents/Notes/Clippings/enrich_clippings_agentic.py`
+after generation. When creator chapters are absent, first ask pi to derive a
+semantic, timestamped chapter outline from the transcript. Modeled on
+`~/Documents/Notes/Clippings/enrich_clippings_agentic.py`
 (pi sub-agent per unit of work, strict output contract), but running pi through
 the **Deno binary already bundled in Replay** — no Node install required.
 
@@ -51,9 +55,11 @@ User clicks "Enrich chapters" (or auto after download, opt-in)
         │
         ▼
 EnrichmentEngine (new, Swift actor — sibling of DownloadEngine)
-  1. Load VideoSubtitleTrack, slice cues into per-chapter transcript text
-     (cue.startTime within [chapter.start, chapter.end)).
-  2. For each chapter: build prompt file in a work dir
+  1. Load VideoSubtitleTrack. If creator chapters are absent, run a dedicated
+     pi subprocess to propose semantic boundaries and titles, then snap and
+     validate its timestamps against subtitle cues (fixed windows are the
+     deterministic fallback).
+  2. Slice cues into per-chapter transcript text and build a prompt file
      (Application Support/Enrichment/<item-id>/chapter-03.prompt.md).
   3. Spawn pi subprocess per chapter, bounded concurrency (2–3):
         deno run -A npm:@earendil-works/pi-coding-agent@<pinned> \
@@ -115,11 +121,13 @@ on the prompt to forbid tool use.
 
 ### Videos without chapters / without subtitles
 
-- **No chapters:** offer a single whole-video summary + exercises (treat the
-  video as one chapter). Optionally later: ask pi to *propose* chapter splits
-  from the transcript.
-- **No subtitles:** disable the feature for that item with an explanatory
-  tooltip (v1). Later option: whisper/ffmpeg transcription.
+- **No chapters:** show the chapter-guide sidebar and offer **Generate chapters
+  & guide**. A pi subprocess proposes semantic titles and cue-aligned starts;
+  invalid output falls back to roughly six-minute cue-aligned sections.
+  Generated chapters are visibly labeled and persisted separately from source
+  metadata.
+- **No subtitles:** keep the sidebar visible with an explanatory empty state;
+  generation remains disabled. Later option: whisper/ffmpeg transcription.
 
 ## Key decisions & risks
 

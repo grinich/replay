@@ -23,6 +23,24 @@ struct VideoEnrichment: Codable, Hashable {
     var itemID: UUID
     var generatedAt: Date
     var chapters: [ChapterEnrichment]
+    /// Present only when the source video had no creator-authored chapters.
+    /// Optional so guides written before generated outlines were introduced
+    /// continue to decode.
+    var generatedChapters: [VideoChapter]?
+
+    init(
+        version: Int,
+        itemID: UUID,
+        generatedAt: Date,
+        chapters: [ChapterEnrichment],
+        generatedChapters: [VideoChapter]? = nil
+    ) {
+        self.version = version
+        self.itemID = itemID
+        self.generatedAt = generatedAt
+        self.chapters = chapters
+        self.generatedChapters = generatedChapters
+    }
 
     func enrichment(forChapterID chapterID: String) -> ChapterEnrichment? {
         chapters.first { $0.chapterID == chapterID }
@@ -37,6 +55,10 @@ enum ChapterEnrichmentLogic {
     /// transcripts keep the head and tail, which usually carry the chapter's
     /// setup and conclusion.
     static let transcriptCharacterBudget = 14_000
+    static let chapterPlanningCharacterBudget = 80_000
+    static let generatedChapterTargetDuration: Double = 6 * 60
+    static let generatedChapterMinimumDuration: Double = 75
+    static let generatedChapterMaximumDuration: Double = 12 * 60
 
     // MARK: Transcript slicing
 
@@ -84,6 +106,195 @@ enum ChapterEnrichmentLogic {
         let head = text.prefix(headCount)
         let tail = text.suffix(tailCount)
         return "\(head)\n[... transcript truncated ...]\n\(tail)"
+    }
+
+    // MARK: Generated chapter planning
+
+    /// Produces a timestamped, evenly sampled transcript for the chapter
+    /// planner. Sampling across the entire video is preferable to truncating
+    /// the middle because topic boundaries can occur anywhere.
+    static func timestampedTranscript(
+        cues: [VideoSubtitleCue],
+        limit: Int = chapterPlanningCharacterBudget
+    ) -> String {
+        var lines: [String] = []
+        var previousText: String?
+        for cue in cues {
+            let text = cue.text
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, text != previousText else { continue }
+            lines.append("[\(timestamp(cue.startTime))] \(text)")
+            previousText = text
+        }
+        guard !lines.isEmpty else { return "" }
+        let fullLength = lines.reduce(0) { $0 + $1.count + 1 }
+        guard fullLength > limit, limit > 0 else { return lines.joined(separator: "\n") }
+
+        let stride = max(2, Int(ceil(Double(fullLength) / Double(limit))))
+        var sampled: [String] = []
+        for (index, line) in lines.enumerated() where index == 0 || index == lines.count - 1 || index % stride == 0 {
+            sampled.append(line)
+        }
+        return sampled.joined(separator: "\n")
+    }
+
+    static func chapterPlanningPrompt(
+        videoTitle: String,
+        videoAuthor: String,
+        cues: [VideoSubtitleCue],
+        videoDuration: Double?
+    ) -> String {
+        let duration = effectiveDuration(videoDuration, cues: cues)
+        let targetCount = max(1, min(16, Int(ceil(duration / generatedChapterTargetDuration))))
+        let author = videoAuthor.isEmpty ? "unknown" : videoAuthor
+        return """
+        You are dividing a video transcript into semantic chapters. Work only \
+        from the timestamped transcript below. Do not browse or use tools.
+
+        Video: \(videoTitle)
+        Author: \(author)
+        Duration: \(timestamp(duration))
+
+        Return a single JSON object and nothing else, with this exact shape:
+        {
+          "chapters": [
+            {"title": "concise topic-specific title", "startTime": 0}
+          ]
+        }
+
+        Rules:
+        - Aim for about \(targetCount) chapters, but follow genuine conceptual boundaries rather than equal time slices.
+        - Each chapter must be one coherent teachable unit: a mechanism, method, experiment, result, argument, or worked example.
+        - Split when the talk moves from motivation to a mechanism, from one method to another, or between unrelated Q&A topics.
+        - For technical material, preserve the concrete technical subject in the title: name the algorithm, objective, architecture, benchmark, failure mode, or trade-off being taught.
+        - Titles must be concise and specific. Never use generic titles such as "Introduction", "Background", "Discussion", "Key Takeaways", "Part 1", or bare "Q&A".
+        - Do not title a chapter after presentation structure ("The speaker explains…"); title it after the knowledge itself.
+        - startTime is seconds from the start as a JSON number.
+        - Every startTime after 0 MUST exactly match a timestamp shown below.
+        - The first chapter MUST start at 0.
+        - Keep chapters in chronological order with no duplicate starts.
+        - Prefer chapters around 4-8 minutes; none may exceed 12 minutes.
+        - Avoid chapters shorter than 75 seconds unless the whole video is short.
+        - Cover the complete video.
+
+        --- TIMESTAMPED TRANSCRIPT ---
+        \(timestampedTranscript(cues: cues))
+        """
+    }
+
+    private struct ChapterPlanOutput: Decodable {
+        struct PlannedChapter: Decodable {
+            let title: String
+            let startTime: Double
+        }
+        let chapters: [PlannedChapter]
+    }
+
+    /// Parses and validates a model-created outline. Boundaries are snapped to
+    /// actual subtitle cue starts; malformed, tiny, or overly sparse outlines
+    /// are rejected so callers can use the deterministic fallback.
+    static func parseGeneratedChapters(
+        output: String,
+        cues: [VideoSubtitleCue],
+        videoDuration: Double?
+    ) -> [VideoChapter]? {
+        guard !cues.isEmpty,
+              let json = extractJSONObject(from: output),
+              let data = json.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(ChapterPlanOutput.self, from: data) else {
+            return nil
+        }
+        let duration = effectiveDuration(videoDuration, cues: cues)
+        guard duration > 0 else { return nil }
+
+        let cueStarts = cues.map(\.startTime)
+        var candidates = decoded.chapters.compactMap { planned -> (String, Double)? in
+            let title = planned.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty, planned.startTime.isFinite else { return nil }
+            let clipped = min(max(0, planned.startTime), duration)
+            return (String(title.prefix(80)), nearestCueStart(to: clipped, cueStarts: cueStarts))
+        }
+        .sorted { $0.1 < $1.1 }
+        guard !candidates.isEmpty else { return nil }
+
+        // The model's first topical title applies from video start even when
+        // the first spoken subtitle begins a few seconds in.
+        candidates[0].1 = 0
+        var accepted: [(String, Double)] = []
+        for candidate in candidates {
+            guard accepted.last.map({ candidate.1 - $0.1 >= generatedChapterMinimumDuration }) ?? true else {
+                continue
+            }
+            accepted.append(candidate)
+        }
+        if accepted.count > 1,
+           let last = accepted.last,
+           duration - last.1 < generatedChapterMinimumDuration {
+            accepted.removeLast()
+        }
+        guard !accepted.isEmpty else { return nil }
+        if duration > generatedChapterMaximumDuration, accepted.count < 2 { return nil }
+
+        let starts = accepted.map(\.1) + [duration]
+        for index in 0..<accepted.count where starts[index + 1] - starts[index] > generatedChapterMaximumDuration {
+            return nil
+        }
+        return accepted.enumerated().map { index, value in
+            VideoChapter(
+                title: value.0,
+                startTime: value.1,
+                endTime: starts[index + 1]
+            )
+        }
+    }
+
+    /// Cue-aligned fixed windows used when the planner subprocess fails or
+    /// returns an invalid outline. This keeps the guide useful and guarantees
+    /// complete coverage without pretending the generic labels are semantic.
+    static func fallbackGeneratedChapters(
+        cues: [VideoSubtitleCue],
+        videoDuration: Double?
+    ) -> [VideoChapter] {
+        let duration = effectiveDuration(videoDuration, cues: cues)
+        guard duration > 0 else { return [] }
+        let count = max(1, min(16, Int(ceil(duration / generatedChapterTargetDuration))))
+        let cueStarts = cues.map(\.startTime)
+        var starts = [0.0]
+        if count > 1 {
+            for index in 1..<count {
+                let proposed = duration * Double(index) / Double(count)
+                let snapped = nearestCueStart(to: proposed, cueStarts: cueStarts)
+                if snapped - (starts.last ?? 0) >= generatedChapterMinimumDuration,
+                   duration - snapped >= generatedChapterMinimumDuration {
+                    starts.append(snapped)
+                }
+            }
+        }
+        return starts.enumerated().map { index, start in
+            let end = index + 1 < starts.count ? starts[index + 1] : duration
+            return VideoChapter(title: "Part \(index + 1)", startTime: start, endTime: end)
+        }
+    }
+
+    private static func effectiveDuration(_ duration: Double?, cues: [VideoSubtitleCue]) -> Double {
+        let cueEnd = cues.last?.endTime ?? 0
+        guard let duration, duration.isFinite, duration > 0 else { return cueEnd }
+        return max(duration, cueEnd)
+    }
+
+    private static func nearestCueStart(to time: Double, cueStarts: [Double]) -> Double {
+        cueStarts.min(by: { abs($0 - time) < abs($1 - time) }) ?? time
+    }
+
+    private static func timestamp(_ time: Double) -> String {
+        let seconds = max(0, Int(time.rounded()))
+        let hours = seconds / 3_600
+        let minutes = (seconds % 3_600) / 60
+        let remainder = seconds % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, remainder)
+            : String(format: "%02d:%02d", minutes, remainder)
     }
 
     // MARK: Prompt
