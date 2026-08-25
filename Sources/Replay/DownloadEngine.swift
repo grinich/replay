@@ -1,6 +1,16 @@
 import Foundation
 
 final class DownloadEngine {
+    static var logsFolderURL: URL {
+        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Logs", isDirectory: true)
+            .appendingPathComponent("Replay", isDirectory: true)
+    }
+
+    static func logFileURL(for itemID: UUID) -> URL {
+        logsFolderURL.appendingPathComponent("\(itemID.uuidString).log")
+    }
+
     struct Metadata {
         let title: String
         let author: String
@@ -47,6 +57,8 @@ final class DownloadEngine {
     ) {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
+            let logURL = Self.logFileURL(for: itemID)
+            var logHandle: FileHandle?
             do {
                 let ytDlp = try self.requiredTool(named: "yt-dlp")
                 let ffmpeg = try self.requiredTool(named: "ffmpeg")
@@ -69,7 +81,7 @@ final class DownloadEngine {
                     "--no-color",
                     "--paths", destination.path,
                     "--output", "\(itemID.uuidString).%(ext)s",
-                    "--format", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/b[height<=1080]/best",
+                    "--format", "bv*[height<=1080][ext=mp4][protocol^=http]+ba[ext=m4a][protocol^=http]/b[height<=1080][ext=mp4][protocol^=http]/b[height<=1080]/best",
                     "--merge-output-format", "mp4",
                     "--write-thumbnail",
                     "--convert-thumbnails", "jpg",
@@ -89,6 +101,14 @@ final class DownloadEngine {
                 arguments.append(sourceURL.absoluteString)
                 process.arguments = arguments
 
+                logHandle = try self.prepareLog(
+                    at: logURL,
+                    sourceURL: sourceURL,
+                    executable: ytDlp,
+                    arguments: arguments
+                )
+                defer { try? logHandle?.close() }
+
                 self.setProcess(process, for: itemID)
                 try process.run()
 
@@ -105,6 +125,7 @@ final class DownloadEngine {
                 while true {
                     let data = output.fileHandleForReading.availableData
                     if data.isEmpty { break }
+                    try? logHandle?.write(contentsOf: data)
                     pending += String(decoding: data, as: UTF8.self)
                     let lines = pending.components(separatedBy: .newlines)
                     pending = lines.last ?? ""
@@ -147,6 +168,7 @@ final class DownloadEngine {
                     metadata: latestMetadata
                 )))
             } catch {
+                self.appendLog("\nReplay error: \(error.localizedDescription)\n", to: logURL)
                 self.removeProcess(for: itemID)
                 completion(.failure(error))
             }
@@ -405,6 +427,41 @@ final class DownloadEngine {
         .compactMap { $0 }
         .joined(separator: ":")
         return environment
+    }
+
+    private func prepareLog(
+        at url: URL,
+        sourceURL: URL,
+        executable: URL,
+        arguments: [String]
+    ) throws -> FileHandle {
+        try FileManager.default.createDirectory(
+            at: Self.logsFolderURL,
+            withIntermediateDirectories: true
+        )
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: 0)
+        let header = """
+        Replay download log
+        Started: \(ISO8601DateFormatter().string(from: Date()))
+        Source: \(sourceURL.absoluteString)
+        Tool: \(executable.path)
+        Arguments: \(arguments.joined(separator: " "))
+
+        """
+        try handle.write(contentsOf: Data(header.utf8))
+        return handle
+    }
+
+    private func appendLog(_ text: String, to url: URL) {
+        guard let data = text.data(using: .utf8),
+              let handle = try? FileHandle(forWritingTo: url) else { return }
+        defer { try? handle.close() }
+        do {
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        } catch { }
     }
 
     private func discoverFile(for itemID: UUID, in folder: URL) -> URL? {

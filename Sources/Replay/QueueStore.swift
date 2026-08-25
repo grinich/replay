@@ -488,6 +488,21 @@ final class QueueStore: ObservableObject {
         NSWorkspace.shared.open(mediaFolder)
     }
 
+    func revealLogsFolder() {
+        let folder = DownloadEngine.logsFolderURL
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(folder)
+    }
+
+    func openDownloadLog(for id: UUID) {
+        let log = DownloadEngine.logFileURL(for: id)
+        if FileManager.default.fileExists(atPath: log.path) {
+            NSWorkspace.shared.open(log)
+        } else {
+            revealLogsFolder()
+        }
+    }
+
     private func migrateQueueToNewestFirstIfNeeded() {
         let defaults = UserDefaults.standard
         guard defaults.integer(forKey: QueueOrderPolicy.versionDefaultsKey) < QueueOrderPolicy.currentVersion else {

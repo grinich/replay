@@ -26,6 +26,7 @@ jobs:
         run: |
           app="dist/Replay.app"
           file "$app/Contents/MacOS/Replay"
+          file "$app/Contents/Helpers/ReplayUpdater"
           "$app/Contents/Resources/Tools/yt-dlp" --version
           "$app/Contents/Resources/Tools/ffmpeg" -version | head -1
           "$app/Contents/Resources/Tools/deno" --version | head -1

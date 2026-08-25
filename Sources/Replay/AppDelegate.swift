@@ -26,11 +26,18 @@ final class URLInbox: ObservableObject {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let inbox = URLInbox()
+    let updater = AppUpdater()
     private var pasteMonitor: Any?
     private var mediaKeyMonitor: Any?
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        _ = updater.installStagedUpdateFromPreviousLaunchIfNeeded()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard updater.phase != .installing else { return }
         SystemMediaController.shared.start()
+        updater.startAutomaticChecks()
         mediaKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .systemDefined) { event in
             guard let action = HardwareMediaKeyEventPolicy.action(
                 subtype: Int(event.subtype.rawValue),

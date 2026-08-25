@@ -7,7 +7,7 @@ downloads_dir="$runtime_root/downloads"
 source_dir="$runtime_root/source"
 output_dir="$runtime_root/universal"
 
-yt_dlp_version="2026.07.04"
+yt_dlp_version="2026.08.19"
 deno_version="v2.9.5"
 ffmpeg_version="8.1.1"
 

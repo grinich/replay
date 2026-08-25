@@ -44,3 +44,18 @@ compile_and_run activation_click \
 compile_and_run replay_migration \
     "$project_dir/Sources/Replay/ReplayMigration.swift" \
     "$project_dir/tools/replay_migration_check.swift"
+
+compile_and_run update_version \
+    "$project_dir/Sources/Replay/UpdateVersion.swift" \
+    "$project_dir/tools/update_version_check.swift"
+
+swiftc -parse-as-library \
+    "$project_dir/Sources/Replay/UpdateVersion.swift" \
+    "$project_dir/Sources/Replay/AppUpdater.swift" \
+    "$project_dir/tools/updater_integration_check.swift" \
+    -o "$scratch_dir/updater_integration"
+"$scratch_dir/updater_integration"
+
+swiftc "$project_dir/Sources/ReplayUpdater/main.swift" -o "$scratch_dir/ReplayUpdater"
+swiftc "$project_dir/tools/updater_helper_check.swift" -o "$scratch_dir/updater_helper_check"
+"$scratch_dir/updater_helper_check" "$scratch_dir/ReplayUpdater"

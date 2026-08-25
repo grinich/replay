@@ -6,6 +6,7 @@ app_dir="$project_dir/dist/Replay.app"
 contents_dir="$app_dir/Contents"
 resources_dir="$contents_dir/Resources"
 macos_dir="$contents_dir/MacOS"
+helpers_dir="$contents_dir/Helpers"
 iconset_dir="$project_dir/.build/Replay.iconset"
 bundled_tools_dir="${REPLAY_BUNDLED_TOOLS_DIR:-}"
 
@@ -13,21 +14,29 @@ if [[ "${REPLAY_UNIVERSAL:-0}" == "1" ]]; then
     arm_build="$project_dir/.build/release-arm64"
     intel_build="$project_dir/.build/release-x86_64"
     swift build --package-path "$project_dir" --scratch-path "$arm_build" -c release --arch arm64 --product Replay
+    swift build --package-path "$project_dir" --scratch-path "$arm_build" -c release --arch arm64 --product ReplayUpdater
     swift build --package-path "$project_dir" --scratch-path "$intel_build" -c release --arch x86_64 --product Replay
+    swift build --package-path "$project_dir" --scratch-path "$intel_build" -c release --arch x86_64 --product ReplayUpdater
     arm_binary="$arm_build/arm64-apple-macosx/release/Replay"
     intel_binary="$intel_build/x86_64-apple-macosx/release/Replay"
+    arm_updater_binary="$arm_build/arm64-apple-macosx/release/ReplayUpdater"
+    intel_updater_binary="$intel_build/x86_64-apple-macosx/release/ReplayUpdater"
 else
     swift build --package-path "$project_dir" -c release --product Replay
+    swift build --package-path "$project_dir" -c release --product ReplayUpdater
     bin_dir=$(swift build --package-path "$project_dir" -c release --show-bin-path)
 fi
 
 rm -rf "$app_dir"
-mkdir -p "$macos_dir" "$resources_dir" "$iconset_dir"
+mkdir -p "$macos_dir" "$helpers_dir" "$resources_dir" "$iconset_dir"
 if [[ "${REPLAY_UNIVERSAL:-0}" == "1" ]]; then
     lipo -create "$arm_binary" "$intel_binary" -output "$macos_dir/Replay"
+    lipo -create "$arm_updater_binary" "$intel_updater_binary" -output "$helpers_dir/ReplayUpdater"
 else
     cp "$bin_dir/Replay" "$macos_dir/Replay"
+    cp "$bin_dir/ReplayUpdater" "$helpers_dir/ReplayUpdater"
 fi
+chmod 755 "$helpers_dir/ReplayUpdater"
 cp "$project_dir/Resources/Info.plist" "$contents_dir/Info.plist"
 
 sips -z 16 16 "$project_dir/Resources/AppIcon-1024.png" --out "$iconset_dir/icon_16x16.png" >/dev/null

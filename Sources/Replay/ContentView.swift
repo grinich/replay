@@ -1087,8 +1087,12 @@ private struct VideoDetail: View {
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 520)
                         .textSelection(.enabled)
-                    Button("Retry Download") { store.startDownload(for: item.id) }
-                        .watchGlassButton(prominent: true)
+                    HStack(spacing: 10) {
+                        Button("Show Log") { store.openDownloadLog(for: item.id) }
+                            .watchGlassButton()
+                        Button("Retry Download") { store.startDownload(for: item.id) }
+                            .watchGlassButton(prominent: true)
+                    }
                 } else {
                     ProgressView()
                         .controlSize(.large)
