@@ -6,8 +6,11 @@ struct ContentView: View {
     @EnvironmentObject private var store: QueueStore
     @EnvironmentObject private var inbox: URLInbox
     @State private var urlText = ""
+    @State private var searchText = ""
+    @State private var isSearchPresented = false
     @State private var isDropTarget = false
     @State private var itemToDelete: WatchItem?
+    @State private var renameRequestID: UUID?
     @State private var detailSelection: UUID?
     @State private var detailSelectionTask: Task<Void, Never>?
     @State private var knownItemIDs: Set<UUID> = []
@@ -16,6 +19,7 @@ struct ContentView: View {
     @State private var windowWidth: CGFloat = 1320
     @State private var urlBarFrame: CGRect = .zero
     @FocusState private var isURLFieldFocused: Bool
+    @FocusState private var isSearchFieldFocused: Bool
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -46,7 +50,7 @@ struct ContentView: View {
                     if width < 1160,
                        columnVisibility != .detailOnly,
                        let selectedItem = store.selectedItem,
-                       !selectedItem.availableChapters.isEmpty {
+                       store.canShowChapterSidebar(for: selectedItem) {
                         withAnimation(.easeInOut(duration: 0.22)) {
                             columnVisibility = .detailOnly
                         }
@@ -122,45 +126,114 @@ struct ContentView: View {
             .allowsHitTesting(false)
 
             VStack(spacing: 0) {
-                DropAndAddBar(
-                    urlText: $urlText,
-                    isDropTarget: $isDropTarget,
-                    isURLFieldFocused: $isURLFieldFocused,
-                    submit: submitURL,
-                    receiveProviders: receiveProviders
-                )
-                .padding(.leading, 82)
-                .padding(.trailing, 54)
-                // NavigationSplitView supplies the native title-bar inset. Keep
-                // the add field in the unshifted center of that header so it
-                // shares a baseline with the traffic-light cluster.
-                .frame(height: 46)
+                sidebarHeader
 
                 Divider()
 
                 queueList
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .ignoresSafeArea(.container, edges: .top)
         }
+    }
+
+    private var sidebarHeader: some View {
+        GeometryReader { geometry in
+            let expandedWidth = max(120, geometry.size.width - 136)
+            HStack(spacing: 28) {
+                Group {
+                    if isSearchPresented {
+                        SidebarSearchBar(
+                            text: $searchText,
+                            isFocused: $isSearchFieldFocused,
+                            close: closeSearch
+                        )
+                    } else {
+                        sidebarHeaderIconButton(
+                            systemImage: "magnifyingglass",
+                            help: "Search video titles (⌘F)",
+                            action: openSearch
+                        )
+                        .keyboardShortcut("f", modifiers: .command)
+                    }
+                }
+                .frame(width: isSearchPresented ? expandedWidth : 40)
+
+                Group {
+                    if isSearchPresented {
+                        sidebarHeaderIconButton(
+                            systemImage: "link",
+                            help: "Add a video",
+                            action: activateURLInput
+                        )
+                    } else {
+                        DropAndAddBar(
+                            urlText: $urlText,
+                            isDropTarget: $isDropTarget,
+                            isURLFieldFocused: $isURLFieldFocused,
+                            submit: submitURL,
+                            receiveProviders: receiveProviders
+                        )
+                    }
+                }
+                .frame(width: isSearchPresented ? 40 : expandedWidth)
+            }
+            .padding(.leading, 14)
+            .frame(maxHeight: .infinity)
+            .animation(.easeInOut(duration: 0.22), value: isSearchPresented)
+        }
+        .frame(height: 46)
+    }
+
+    private func sidebarHeaderIconButton(
+        systemImage: String,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 40, height: 32)
+                .contentShape(Rectangle())
+                .watchGlass(
+                    .clear,
+                    interactive: true,
+                    in: RoundedRectangle(cornerRadius: 15, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.07))
+                }
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    private var normalizedSearchQuery: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func matchesSearch(_ item: WatchItem) -> Bool {
+        normalizedSearchQuery.isEmpty || item.title.localizedCaseInsensitiveContains(normalizedSearchQuery)
     }
 
     @ViewBuilder
     private var queueList: some View {
-        let queueItems = store.queueItems
-        let archivedItems = store.archivedItems
+        let allQueueItems = store.queueItems
+        let allArchivedItems = store.archivedItems
+        let queueItems = allQueueItems.filter(matchesSearch)
+        let archivedItems = allArchivedItems.filter(matchesSearch)
 
-        if queueItems.isEmpty && archivedItems.isEmpty {
+        if allQueueItems.isEmpty && allArchivedItems.isEmpty {
             SidebarEmptyState()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if queueItems.isEmpty && archivedItems.isEmpty && !normalizedSearchQuery.isEmpty {
+            SidebarSearchEmptyState(query: normalizedSearchQuery)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollViewReader { proxy in
                 ScrollView(.vertical) {
                     LazyVStack(alignment: .leading, spacing: 4, pinnedViews: [.sectionHeaders]) {
-                        Color.clear
-                            .frame(height: 0)
-                            .id("queue-top")
-
                         if !queueItems.isEmpty {
                             ForEach(queueItems) { item in
                                 sidebarRow(item)
@@ -172,10 +245,6 @@ struct ContentView: View {
                                             )
                                         }
                                     }
-                                    .simultaneousGesture(
-                                        DragGesture(minimumDistance: 4, coordinateSpace: .named("queue-list"))
-                                            .onChanged { updateQueueDrag(item.id, at: $0.location) }
-                                    )
                             }
                         }
 
@@ -212,15 +281,6 @@ struct ContentView: View {
                         proxy.scrollTo(addedID, anchor: .top)
                     }
                 }
-                .onAppear {
-                    // A persisted selection can be far down the queue. The
-                    // list itself should nevertheless start at its real top
-                    // after every launch, with the normal eight-point inset
-                    // above the newest item.
-                    DispatchQueue.main.async {
-                        proxy.scrollTo("queue-top", anchor: .top)
-                    }
-                }
             }
         }
     }
@@ -230,7 +290,12 @@ struct ContentView: View {
             item: item,
             isSelected: store.selection == item.id,
             select: { store.selection = item.id },
-            rename: { store.rename(item.id, to: $0) }
+            renameRequested: renameRequestID == item.id,
+            rename: { store.rename(item.id, to: $0) },
+            finishRenameRequest: {
+                if renameRequestID == item.id { renameRequestID = nil }
+            },
+            reorder: { updateQueueDrag(item.id, at: $0) }
         )
         .equatable()
         .id(item.id)
@@ -243,6 +308,7 @@ struct ContentView: View {
                 Button("Retry Download") { store.startDownload(for: item.id) }
             }
             Button("Open Original") { store.openOriginal(item.id) }
+            Button("Rename") { renameRequestID = item.id }
             Divider()
             Button("Remove", role: .destructive) { itemToDelete = item }
         }
@@ -284,6 +350,32 @@ struct ContentView: View {
             await Task.yield()
             guard !Task.isCancelled, store.selection == selectedID else { return }
             detailSelection = selectedID
+        }
+    }
+
+    private func openSearch() {
+        isURLFieldFocused = false
+        withAnimation(.easeInOut(duration: 0.22)) {
+            isSearchPresented = true
+        }
+        DispatchQueue.main.async {
+            isSearchFieldFocused = true
+        }
+    }
+
+    private func closeSearch() {
+        isSearchFieldFocused = false
+        searchText = ""
+        withAnimation(.easeInOut(duration: 0.22)) {
+            isSearchPresented = false
+        }
+        NSApp.keyWindow?.makeFirstResponder(nil)
+    }
+
+    private func activateURLInput() {
+        closeSearch()
+        DispatchQueue.main.async {
+            isURLFieldFocused = true
         }
     }
 
@@ -398,13 +490,18 @@ private struct QueueRow: View, Equatable {
     let item: WatchItem
     let isSelected: Bool
     let select: () -> Void
+    let renameRequested: Bool
     let rename: (String) -> Void
+    let finishRenameRequest: () -> Void
+    let reorder: (CGPoint) -> Void
     @State private var isEditingTitle = false
     @State private var draftTitle = ""
     @FocusState private var isTitleFocused: Bool
 
     static func == (lhs: QueueRow, rhs: QueueRow) -> Bool {
-        lhs.item == rhs.item && lhs.isSelected == rhs.isSelected
+        lhs.item == rhs.item &&
+            lhs.isSelected == rhs.isSelected &&
+            lhs.renameRequested == rhs.renameRequested
     }
 
     var body: some View {
@@ -434,6 +531,10 @@ private struct QueueRow: View, Equatable {
             }
 
             Spacer(minLength: 0)
+
+            if !item.isWatched {
+                reorderHandle
+            }
         }
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 8)
@@ -450,6 +551,9 @@ private struct QueueRow: View, Equatable {
         }
         .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         .onTapGesture(perform: select)
+        .onChange(of: renameRequested) { requested in
+            if requested { beginEditing() }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .accessibilityAction(.default, select)
@@ -483,15 +587,28 @@ private struct QueueRow: View, Equatable {
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
                 .contentShape(Rectangle())
-                .onTapGesture(count: 2, perform: beginEditing)
-                .help("Double-click to rename")
+                .help("Right-click to rename")
         }
     }
 
+    private var reorderHandle: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .frame(width: 28, height: 40)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 6, coordinateSpace: .named("queue-list"))
+                    .onChanged { reorder($0.location) }
+            )
+            .help("Drag to reorder")
+    }
+
     private func beginEditing() {
-        select()
+        guard !isEditingTitle else { return }
         draftTitle = item.title
         isEditingTitle = true
+        select()
         DispatchQueue.main.async {
             isTitleFocused = true
         }
@@ -507,6 +624,7 @@ private struct QueueRow: View, Equatable {
         }
         isEditingTitle = false
         isTitleFocused = false
+        finishRenameRequest()
     }
 
     private var icon: String {
@@ -619,6 +737,26 @@ private struct QueueThumbnail: View {
         return hours > 0
             ? String(format: "%d:%02d:%02d", hours, minutes, remaining)
             : String(format: "%d:%02d", minutes, remaining)
+    }
+}
+
+private struct SidebarSearchEmptyState: View {
+    let query: String
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 25, weight: .light))
+                .foregroundStyle(.secondary)
+            Text("No matching videos")
+                .font(.headline)
+            Text("No titles contain “\(query)”. Press Escape to show the full list.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 210)
+        }
+        .padding()
     }
 }
 
@@ -770,19 +908,31 @@ private struct VideoDetail: View {
             }
     }
 
+    private var displayedChapters: [VideoChapter] {
+        store.displayChapters(for: item)
+    }
+
+    private var hasChapterSidebar: Bool {
+        store.canShowChapterSidebar(for: item)
+    }
+
+    private var usesGeneratedChapters: Bool {
+        item.availableChapters.isEmpty && !displayedChapters.isEmpty
+    }
+
     private var usesCompactToolbarActions: Bool {
-        !item.availableChapters.isEmpty
+        hasChapterSidebar
     }
 
     @ViewBuilder
     private var chapterLayout: some View {
-        if item.availableChapters.isEmpty {
+        if !hasChapterSidebar {
             centerPane
         } else if #available(macOS 14.0, *) {
             centerPane
                 .inspector(isPresented: $chaptersPresented) {
                     chapterSidebar
-                        .inspectorColumnWidth(min: 232, ideal: 300, max: 400)
+                        .inspectorColumnWidth(min: 232, ideal: 330, max: 500)
                 }
         } else {
             HSplitView {
@@ -791,7 +941,7 @@ private struct VideoDetail: View {
 
                 if chaptersPresented {
                     chapterSidebar
-                        .frame(minWidth: 232, idealWidth: 300, maxWidth: 400)
+                        .frame(minWidth: 232, idealWidth: 330, maxWidth: 500)
                 }
             }
         }
@@ -830,7 +980,7 @@ private struct VideoDetail: View {
             }
             .fixedSize()
 
-            if !item.availableChapters.isEmpty, !chaptersPresented {
+            if hasChapterSidebar, !chaptersPresented {
                 TitlebarInteractiveHost {
                     Button(action: toggleChapters) {
                         Image(systemName: "sidebar.trailing")
@@ -841,7 +991,10 @@ private struct VideoDetail: View {
                 .fixedSize()
             }
         }
-        .padding(.leading, sidebarCollapsed ? 154 : 14)
+        // NavigationSplitView keeps its native sidebar toggle in the detail
+        // title bar even while the sidebar is visible. Reserve the toggle's
+        // footprint here so long titles cannot render underneath it.
+        .padding(.leading, sidebarCollapsed ? 154 : 50)
         .padding(.trailing, 14)
         .frame(height: 56)
     }
@@ -894,7 +1047,7 @@ private struct VideoDetail: View {
                         PlaybackControls(
                             snapshot: playback,
                             knownDuration: item.duration,
-                            chapters: item.availableChapters,
+                            chapters: displayedChapters,
                             togglePlayback: { PlaybackCommandCenter.shared.togglePlayback() },
                             skip: { PlaybackCommandCenter.shared.skip(by: $0) },
                             seek: seekToTime,
@@ -916,11 +1069,19 @@ private struct VideoDetail: View {
 
     private var chapterSidebar: some View {
         ChapterSidebar(
-            chapters: item.availableChapters,
+            chapters: displayedChapters,
             currentTime: playback.currentTime,
             isPresented: chaptersPresented,
+            usesGeneratedChapters: usesGeneratedChapters,
+            hasSubtitles: item.subtitleFileURL != nil,
+            enrichment: store.enrichments[item.id],
+            activity: store.enrichmentActivity[item.id],
+            canEnrich: item.state == .ready && item.subtitleFileURL != nil,
             toggle: toggleChapters,
-            select: seekToChapter
+            select: seekToChapter,
+            enrich: { force, guidance in store.enrichChapters(for: item.id, force: force, guidance: guidance) },
+            cancelEnrichment: { store.cancelEnrichment(for: item.id) },
+            dismissFailure: { store.dismissEnrichmentFailure(for: item.id) }
         )
         .ignoresSafeArea(.container, edges: .top)
     }
@@ -1128,7 +1289,7 @@ private struct VideoDetail: View {
     }
 
     private var prefersOneSidePane: Bool {
-        windowWidth < 1160 && !item.availableChapters.isEmpty
+        windowWidth < 1160 && hasChapterSidebar
     }
 
     private func collapseSidebarForNarrowChapterLayoutIfNeeded() {
@@ -1748,20 +1909,46 @@ private struct ChapterSidebar: View {
     let chapters: [VideoChapter]
     let currentTime: Double
     let isPresented: Bool
+    let usesGeneratedChapters: Bool
+    let hasSubtitles: Bool
+    let enrichment: VideoEnrichment?
+    let activity: QueueStore.EnrichmentActivity?
+    let canEnrich: Bool
     let toggle: () -> Void
     let select: (VideoChapter) -> Void
+    let enrich: (_ force: Bool, _ guidance: String?) -> Void
+    let cancelEnrichment: () -> Void
+    let dismissFailure: () -> Void
+
+    @State private var expandedChapters: Set<String> = []
+    @State private var revealedSolutions: Set<String> = []
+    @State private var regeneratePopoverShown = false
+    @State private var regenerateGuidance = ""
+    @AppStorage("chapterSidebarFontSize") private var sidebarFontSize = 14.5
+
+    private enum SidebarType {
+        static let defaultSize = 14.5
+        static let minimumSize = 11.5
+        static let maximumSize = 22.5
+        static let step = 1.0
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                Label("Chapters", systemImage: "list.bullet.rectangle")
-                    .font(.headline.weight(.semibold))
-                Text("\(chapters.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(Color.secondary.opacity(0.1), in: Capsule())
+                Label(
+                    chapters.isEmpty ? "Chapter guide" : (usesGeneratedChapters ? "Generated chapters" : "Chapters"),
+                    systemImage: "list.bullet.rectangle"
+                )
+                .font(.headline.weight(.semibold))
+                if !chapters.isEmpty {
+                    Text("\(chapters.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.secondary.opacity(0.1), in: Capsule())
+                }
                 Spacer(minLength: 8)
                 if isPresented {
                     TitlebarInteractiveHost {
@@ -1779,44 +1966,402 @@ private struct ChapterSidebar: View {
 
             Divider()
 
+            fontSizeControls
+
+            Divider()
+
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 3) {
-                    ForEach(chapters) { chapter in
-                        Button {
-                            select(chapter)
-                        } label: {
-                            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                                Text(formatTime(chapter.startTime))
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(isCurrent(chapter) ? Color.accentColor : Color.secondary)
-                                    .frame(width: 48, alignment: .trailing)
-                                Text(chapter.title)
-                                    .font(.callout.weight(isCurrent(chapter) ? .semibold : .regular))
-                                    .foregroundStyle(.primary)
-                                    .multilineTextAlignment(.leading)
-                                    .lineLimit(2)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 10)
-                            .background {
-                                if isCurrent(chapter) {
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(Color.accentColor.opacity(0.13))
-                                }
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
+                if chapters.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "list.bullet.rectangle")
+                            .font(.system(size: 28, weight: .light))
+                            .foregroundStyle(Color.accentColor)
+                        Text(hasSubtitles ? "No creator chapters" : "No chapters or subtitles")
+                            .font(.system(size: sidebarFontSize + 2, weight: .semibold))
+                        Text(hasSubtitles
+                             ? "Replay can find topic boundaries in the offline subtitles, then create notes and exercises for each section."
+                             : "Replay needs offline subtitles before it can generate chapters and a study guide.")
+                            .font(.system(size: sidebarFontSize))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 36)
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 3) {
+                        ForEach(chapters) { chapter in
+                            chapterRow(chapter)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 8)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 8)
             }
             .scrollIndicators(.hidden)
+
+            if canEnrich || activity != nil {
+                Divider()
+                enrichmentFooter
+            }
         }
         .background(.ultraThinMaterial)
+    }
+
+    private var fontSizeControls: some View {
+        HStack(spacing: 8) {
+            Text("Text size")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 8)
+
+            fontSizeButton("−", help: "Decrease sidebar text size", disabled: sidebarFontSize <= SidebarType.minimumSize) {
+                sidebarFontSize = max(SidebarType.minimumSize, sidebarFontSize - SidebarType.step)
+            }
+
+            Text("\(Int(sidebarFontSize.rounded()))")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+
+            fontSizeButton("+", help: "Increase sidebar text size", disabled: sidebarFontSize >= SidebarType.maximumSize) {
+                sidebarFontSize = min(SidebarType.maximumSize, sidebarFontSize + SidebarType.step)
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 46)
+    }
+
+    private func fontSizeButton(
+        _ label: String,
+        help: String,
+        disabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) { action() }
+        } label: {
+            Text(label)
+                .font(.system(size: 18, weight: .medium, design: .rounded))
+                .frame(width: 40, height: 40)
+                .contentShape(Rectangle())
+                .background(
+                    Color.primary.opacity(disabled ? 0.035 : 0.075),
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .help(help)
+    }
+
+    @ViewBuilder
+    private func chapterRow(_ chapter: VideoChapter) -> some View {
+        let chapterEnrichment = enrichment?.enrichment(forChapterID: chapter.id)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Button {
+                    select(chapter)
+                } label: {
+                    Text(formatTime(chapter.startTime))
+                        .font(.system(size: max(10, sidebarFontSize - 2), design: .monospaced))
+                        .foregroundStyle(isCurrent(chapter) ? Color.accentColor : Color.secondary)
+                        .frame(width: timestampColumnWidth, alignment: .trailing)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Go to \(formatTime(chapter.startTime))")
+
+                if chapterEnrichment != nil {
+                    Button {
+                        toggleExpanded(chapter.id)
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            chapterTitle(chapter)
+                            Spacer(minLength: 0)
+                            Image(systemName: expandedChapters.contains(chapter.id) ? "chevron.down" : "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 22, height: 22)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(expandedChapters.contains(chapter.id) ? "Hide summary and exercises" : "Show summary and exercises")
+                } else {
+                    chapterTitle(chapter)
+                    Spacer(minLength: 0)
+                }
+            }
+            .padding(.leading, 10)
+            .padding(.trailing, 6)
+            .padding(.vertical, 10)
+
+            if let chapterEnrichment, expandedChapters.contains(chapter.id) {
+                enrichmentDetail(chapterEnrichment)
+                    .padding(.leading, 16)
+                    .padding(.trailing, 14)
+                    .padding(.top, 2)
+                    .padding(.bottom, 16)
+            }
+        }
+        .background {
+            if isCurrent(chapter) {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.13))
+            }
+        }
+    }
+
+    private var timestampColumnWidth: CGFloat {
+        48 + max(0, sidebarFontSize - SidebarType.defaultSize) * 1.5
+    }
+
+    private func chapterTitle(_ chapter: VideoChapter) -> some View {
+        Text(chapter.title)
+            .font(.system(size: sidebarFontSize, weight: isCurrent(chapter) ? .semibold : .regular))
+            .foregroundStyle(.primary)
+            .multilineTextAlignment(.leading)
+            .lineLimit(3)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Reading typography for the chapter guide, modeled on Clearly's
+    /// preview: a serif reading face (New York on macOS), comfortable size,
+    /// and ~1.7 line height. Every value follows the persisted sidebar size.
+    private var guideBodyFont: Font {
+        .system(size: sidebarFontSize, weight: .regular, design: .serif)
+    }
+
+    private var guideQuestionFont: Font {
+        .system(size: sidebarFontSize, weight: .medium, design: .serif)
+    }
+
+    private var guideLineSpacing: CGFloat { sidebarFontSize * 0.7 }
+
+    private var guideSectionLabelFont: Font {
+        .system(size: max(9.5, sidebarFontSize - 4), weight: .semibold)
+    }
+
+    private var guideOrdinalFont: Font {
+        .system(size: max(10, sidebarFontSize - 2.5), weight: .semibold, design: .rounded)
+    }
+
+    private func enrichmentDetail(_ chapterEnrichment: ChapterEnrichment) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(ChapterEnrichmentLogic.displayText(chapterEnrichment.summary))
+                .font(guideBodyFont)
+                .foregroundStyle(.primary)
+                .lineSpacing(guideLineSpacing)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+
+            if !chapterEnrichment.keyPoints.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(Array(chapterEnrichment.keyPoints.enumerated()), id: \.offset) { _, point in
+                        HStack(alignment: .firstTextBaseline, spacing: 9) {
+                            Circle()
+                                .fill(.tertiary)
+                                .frame(width: 4, height: 4)
+                                .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 5 }
+                            Text(ChapterEnrichmentLogic.displayText(point))
+                                .font(guideBodyFont)
+                                .foregroundStyle(.primary.opacity(0.85))
+                                .lineSpacing(guideLineSpacing * 0.75)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+
+            if !chapterEnrichment.exercises.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("EXERCISES")
+                        .font(guideSectionLabelFont)
+                        .kerning(1.1)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                    ForEach(Array(chapterEnrichment.exercises.enumerated()), id: \.offset) { index, exercise in
+                        exerciseView(exercise, index: index, chapterID: chapterEnrichment.chapterID)
+                    }
+                }
+            }
+        }
+    }
+
+    private func exerciseView(_ exercise: ChapterExercise, index: Int, chapterID: String) -> some View {
+        let solutionKey = "\(chapterID)#\(index)"
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Text("\(index + 1)")
+                    .font(guideOrdinalFont)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .background(Color.secondary.opacity(0.12), in: Circle())
+                    .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 5 }
+                Text(ChapterEnrichmentLogic.displayText(exercise.question))
+                    .font(guideQuestionFont)
+                    .foregroundStyle(.primary)
+                    .lineSpacing(guideLineSpacing * 0.75)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            if !exercise.solution.isEmpty {
+                let isRevealed = revealedSolutions.contains(solutionKey)
+                VStack(alignment: .leading, spacing: 6) {
+                    Button(isRevealed ? "Hide solution" : "Show solution") {
+                        toggleSolution(solutionKey)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: sidebarFontSize, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                    if isRevealed {
+                        Text(ChapterEnrichmentLogic.displayText(exercise.solution))
+                            .font(guideBodyFont)
+                            .foregroundStyle(.primary.opacity(0.75))
+                            .lineSpacing(guideLineSpacing * 0.75)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                            .padding(.leading, 12)
+                            .overlay(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 1)
+                                    .fill(Color.accentColor.opacity(0.45))
+                                    .frame(width: 2)
+                            }
+                    }
+                }
+                .padding(.leading, 27)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var enrichmentFooter: some View {
+        Group {
+            switch activity {
+            case .running(let completed, let total):
+                HStack(spacing: 8) {
+                    ProgressView(value: Double(completed), total: Double(max(total, 1)))
+                        .progressViewStyle(.linear)
+                    Text("\(completed)/\(total)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Button {
+                        cancelEnrichment()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Cancel")
+                }
+            case .failed(let message):
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                    Spacer(minLength: 4)
+                    Button("Retry") {
+                        dismissFailure()
+                        enrich(false, nil)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.accentColor)
+                }
+            case nil:
+                if enrichment == nil || chapters.isEmpty {
+                    Button {
+                        enrich(false, nil)
+                    } label: {
+                        Label(
+                            chapters.isEmpty ? "Generate chapters & guide" : "Summaries & exercises",
+                            systemImage: chapters.isEmpty ? "list.bullet.rectangle" : "note.text"
+                        )
+                        .font(.caption.weight(.medium))
+                        .frame(maxWidth: .infinity)
+                    }
+                    .watchGlassButton()
+                    .help(chapters.isEmpty ? "Find chapters and generate a study guide from subtitles" : "Generate a summary and exercises for each chapter")
+                } else {
+                    HStack(spacing: 6) {
+                        Label("Chapter guide ready", systemImage: "note.text")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 4)
+                        Button("Regenerate") {
+                            regeneratePopoverShown = true
+                        }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.accentColor)
+                        .popover(isPresented: $regeneratePopoverShown, arrowEdge: .bottom) {
+                            regeneratePopover
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+    }
+
+    private var regeneratePopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Regenerate chapter guide")
+                .font(.headline)
+            Text("Optionally tell the model what to change — it will revise the existing guide, or rewrite it when that serves better.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("e.g. add more exercises, make summaries shorter…", text: $regenerateGuidance, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(2...5)
+                .frame(width: 280)
+                .onSubmit(submitRegenerate)
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    regeneratePopoverShown = false
+                }
+                Button(regenerateGuidance.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Regenerate from scratch" : "Regenerate") {
+                    submitRegenerate()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(14)
+    }
+
+    private func submitRegenerate() {
+        let guidance = regenerateGuidance.trimmingCharacters(in: .whitespacesAndNewlines)
+        regeneratePopoverShown = false
+        regenerateGuidance = ""
+        enrich(true, guidance.isEmpty ? nil : guidance)
+    }
+
+    private func toggleSolution(_ solutionKey: String) {
+        if revealedSolutions.contains(solutionKey) {
+            revealedSolutions.remove(solutionKey)
+        } else {
+            revealedSolutions.insert(solutionKey)
+        }
+    }
+
+    private func toggleExpanded(_ chapterID: String) {
+        if expandedChapters.contains(chapterID) {
+            expandedChapters.remove(chapterID)
+        } else {
+            expandedChapters.insert(chapterID)
+        }
     }
 
     private func isCurrent(_ chapter: VideoChapter) -> Bool {
@@ -1834,6 +2379,46 @@ private struct ChapterSidebar: View {
         return hours > 0
             ? String(format: "%d:%02d:%02d", hours, minutes, remaining)
             : String(format: "%d:%02d", minutes, remaining)
+    }
+}
+
+private struct SidebarSearchBar: View {
+    @Binding var text: String
+    var isFocused: FocusState<Bool>.Binding
+    let close: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            TextField("Search video titles", text: $text)
+                .textFieldStyle(.plain)
+                .focused(isFocused)
+                .onExitCommand(perform: close)
+
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+            }
+            .watchGlassButton(prominent: true)
+            .controlSize(.small)
+            .keyboardShortcut(.cancelAction)
+            .help("Close search")
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 7)
+        .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32)
+        .watchGlass(
+            .clear,
+            interactive: true,
+            in: RoundedRectangle(cornerRadius: 15, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.07))
+        }
     }
 }
 

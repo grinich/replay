@@ -52,6 +52,11 @@ final class QueueStore: ObservableObject {
         case existing
     }
 
+    enum EnrichmentActivity: Equatable {
+        case running(completed: Int, total: Int)
+        case failed(String)
+    }
+
     struct IntakeNotice: Identifiable, Equatable {
         let id = UUID()
         let title: String
@@ -63,8 +68,13 @@ final class QueueStore: ObservableObject {
     @Published var selection: UUID?
     @Published var lastIntakeError: String?
     @Published private(set) var intakeNotice: IntakeNotice?
+    @Published private(set) var enrichments: [UUID: VideoEnrichment] = [:]
+    @Published private(set) var enrichmentActivity: [UUID: EnrichmentActivity] = [:]
 
     private let downloader = DownloadEngine()
+    private let enricher = EnrichmentEngine()
+    private let enrichmentRoot: URL
+    private let denoCacheFolder: URL
     private let networkMonitor = NetworkMonitor()
     private let powerMonitor = PowerModeMonitor()
     private let maximumConcurrentDownloads = 3
@@ -95,6 +105,8 @@ final class QueueStore: ObservableObject {
 
         let applicationSupport = migration.applicationSupport
         dataFile = applicationSupport.appendingPathComponent("queue.json")
+        enrichmentRoot = applicationSupport.appendingPathComponent("Enrichment", isDirectory: true)
+        denoCacheFolder = applicationSupport.appendingPathComponent("DenoCache", isDirectory: true)
         persistenceWriter = QueuePersistenceWriter(dataFile: dataFile)
         mediaFolder = migration.mediaFolder
         try? fileManager.createDirectory(at: applicationSupport, withIntermediateDirectories: true)
@@ -116,6 +128,7 @@ final class QueueStore: ObservableObject {
         }
         save()
         selection = queueItems.first?.id ?? archivedItems.first?.id
+        loadPersistedEnrichments()
 
         networkMonitor.onBecameOnline = { [weak self] in
             self?.resumeWaitingDownloads()
@@ -458,9 +471,131 @@ final class QueueStore: ObservableObject {
         }
     }
 
+    // MARK: - Chapter enrichment
+
+    func enrichmentFileURL(for id: UUID) -> URL {
+        enrichmentRoot
+            .appendingPathComponent(id.uuidString, isDirectory: true)
+            .appendingPathComponent("enrichment.json")
+    }
+
+    func isEnriching(_ id: UUID) -> Bool {
+        if case .running = enrichmentActivity[id] { return true }
+        return false
+    }
+
+    /// Creator chapters always win. A generated outline is only displayed for
+    /// videos whose source metadata did not contain chapters.
+    func displayChapters(for item: WatchItem) -> [VideoChapter] {
+        if !item.availableChapters.isEmpty { return item.availableChapters }
+        return enrichments[item.id]?.generatedChapters ?? []
+    }
+
+    func canShowChapterSidebar(for item: WatchItem) -> Bool {
+        !displayChapters(for: item).isEmpty || item.state == .ready
+    }
+
+    func enrichChapters(for id: UUID, force: Bool = false, guidance: String? = nil) {
+        guard let item = item(with: id), item.state == .ready, !isEnriching(id) else { return }
+        guard item.subtitleFileURL != nil else {
+            enrichmentActivity[id] = .failed("This video has no offline subtitles to summarize.")
+            return
+        }
+        let trimmedGuidance = guidance?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let revisionGuidance = (trimmedGuidance?.isEmpty ?? true) ? nil : trimmedGuidance
+        // With guidance, the previous guide is context for revision; a plain
+        // force regenerates from scratch.
+        let existing = (force && revisionGuidance == nil) ? nil : enrichments[id]
+        let chapterCount = max(1, displayChapters(for: item).count)
+        enrichmentActivity[id] = .running(completed: 0, total: chapterCount)
+
+        let workDirectory = enrichmentFileURL(for: id).deletingLastPathComponent()
+        enricher.enrich(
+            item: item,
+            existing: existing,
+            guidance: revisionGuidance,
+            workDirectory: workDirectory,
+            denoCacheDirectory: denoCacheFolder,
+            onProgress: { [weak self] progress in
+                DispatchQueue.main.async {
+                    guard let self, self.isEnriching(id) else { return }
+                    self.enrichmentActivity[id] = .running(
+                        completed: progress.completedChapters,
+                        total: progress.totalChapters
+                    )
+                }
+            },
+            completion: { [weak self] result in
+                DispatchQueue.main.async {
+                    self?.finishEnrichment(result, for: id)
+                }
+            }
+        )
+    }
+
+    func cancelEnrichment(for id: UUID) {
+        enricher.cancel(itemID: id)
+        enrichmentActivity[id] = nil
+    }
+
+    func dismissEnrichmentFailure(for id: UUID) {
+        if case .failed = enrichmentActivity[id] { enrichmentActivity[id] = nil }
+    }
+
+    private func finishEnrichment(_ result: Result<EnrichmentEngine.Outcome, Error>, for id: UUID) {
+        switch result {
+        case .success(let outcome):
+            enrichments[id] = outcome.enrichment
+            enrichmentActivity[id] = nil
+            try? ChapterEnrichmentLogic.save(outcome.enrichment, to: enrichmentFileURL(for: id))
+            if outcome.failedChapterTitles.isEmpty {
+                showIntakeNotice(
+                    title: "Chapter guide ready",
+                    detail: "Summaries and exercises were generated",
+                    systemImage: "note.text"
+                )
+            } else {
+                let count = outcome.failedChapterTitles.count
+                showIntakeNotice(
+                    title: "Chapter guide partly ready",
+                    detail: "\(count) chapter\(count == 1 ? "" : "s") failed — run again to retry",
+                    systemImage: "exclamationmark.triangle"
+                )
+            }
+        case .failure(let error):
+            if case EnrichmentEngine.EngineError.cancelled = error {
+                enrichmentActivity[id] = nil
+            } else {
+                enrichmentActivity[id] = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    private func loadPersistedEnrichments() {
+        let candidates = items.map { ($0.id, enrichmentFileURL(for: $0.id)) }
+        Task.detached(priority: .utility) { [weak self] in
+            var loaded: [UUID: VideoEnrichment] = [:]
+            for (id, url) in candidates {
+                if let enrichment = ChapterEnrichmentLogic.load(from: url) {
+                    loaded[id] = enrichment
+                }
+            }
+            guard !loaded.isEmpty else { return }
+            let snapshot = loaded
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.enrichments.merge(snapshot) { current, _ in current }
+            }
+        }
+    }
+
     func remove(_ id: UUID, deleteMedia: Bool = true) {
         cancelRecovery(for: id)
         downloader.cancel(itemID: id)
+        enricher.cancel(itemID: id)
+        enrichments[id] = nil
+        enrichmentActivity[id] = nil
+        try? FileManager.default.removeItem(at: enrichmentFileURL(for: id).deletingLastPathComponent())
         if deleteMedia {
             let prefix = id.uuidString + "."
             let files = (try? FileManager.default.contentsOfDirectory(
