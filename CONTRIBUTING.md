@@ -33,6 +33,7 @@ The release workflow requires these repository secrets:
 
 - `DEVELOPER_ID_P12_BASE64`: password-protected Developer ID Application identity exported as a `.p12`, then base64 encoded
 - `DEVELOPER_ID_P12_PASSWORD`: password used when exporting the `.p12`
-- `APPLE_ID`: Apple Developer account email used for notarization
-- `APPLE_APP_SPECIFIC_PASSWORD`: app-specific password for `notarytool`
 - `APPLE_TEAM_ID`: Apple Developer team identifier
+- `APPLE_API_KEY_ID`: App Store Connect team API key identifier
+- `APPLE_API_ISSUER_ID`: App Store Connect API issuer identifier
+- `APPLE_API_PRIVATE_KEY_BASE64`: base64-encoded `.p8` private key for notarization
