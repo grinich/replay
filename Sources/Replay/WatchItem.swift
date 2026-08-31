@@ -15,6 +15,16 @@ struct VideoChapter: Codable, Hashable, Identifiable {
     var id: String { "\(startTime)-\(title)" }
 }
 
+/// A playable source may be a finished local movie or the combined remote
+/// stream exposed while the high-quality offline copy is still downloading.
+struct VideoPlaybackSource: Equatable, Hashable {
+    let videoURL: URL
+
+    init(videoURL: URL) {
+        self.videoURL = videoURL
+    }
+}
+
 struct WatchItem: Identifiable, Codable, Hashable {
     let id: UUID
     var urlString: String

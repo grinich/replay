@@ -27,4 +27,12 @@ brew install yt-dlp ffmpeg deno
 
 ## Releases
 
-The version comes from `Resources/Info.plist`. To publish a release, update both bundle version fields and push a matching `v*` tag. GitHub Actions builds the universal, self-contained app and attaches `Replay-macOS.zip` plus its SHA-256 checksum to the release.
+The version comes from `Resources/Info.plist`. To publish a release, update both bundle version fields and push a matching `v*` tag. GitHub Actions imports the Developer ID certificate, builds the universal self-contained app, notarizes and staples the app and DMG, and publishes both `Replay.dmg` and the updater's `Replay-macOS.zip` with SHA-256 checksums.
+
+The release workflow requires these repository secrets:
+
+- `DEVELOPER_ID_P12_BASE64`: password-protected Developer ID Application identity exported as a `.p12`, then base64 encoded
+- `DEVELOPER_ID_P12_PASSWORD`: password used when exporting the `.p12`
+- `APPLE_ID`: Apple Developer account email used for notarization
+- `APPLE_APP_SPECIFIC_PASSWORD`: app-specific password for `notarytool`
+- `APPLE_TEAM_ID`: Apple Developer team identifier

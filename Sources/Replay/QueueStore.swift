@@ -63,6 +63,7 @@ final class QueueStore: ObservableObject {
     @Published var selection: UUID?
     @Published var lastIntakeError: String?
     @Published private(set) var intakeNotice: IntakeNotice?
+    @Published private var progressivePlaybackSources: [UUID: VideoPlaybackSource] = [:]
 
     private let downloader = DownloadEngine()
     private let networkMonitor = NetworkMonitor()
@@ -132,8 +133,8 @@ final class QueueStore: ObservableObject {
 
         let resumable = items.filter { $0.state == .queued }.map(\.id)
         let missingChapterMetadata = items.filter { $0.state == .ready && $0.chapters == nil }.map(\.id)
-        let missingThumbnails = items.filter { $0.state == .ready && $0.thumbnailFilePath == nil }.map(\.id)
-        let missingSubtitles = items.filter { $0.state == .ready && $0.subtitleFilePath == nil }.map(\.id)
+        let missingThumbnails = items.filter { $0.state == .ready && $0.thumbnailFileURL == nil }.map(\.id)
+        let missingSubtitles = items.filter { $0.state == .ready && $0.subtitleFileURL == nil }.map(\.id)
         DispatchQueue.main.async { [weak self] in
             resumable.forEach { self?.startDownload(for: $0) }
             missingChapterMetadata.forEach { self?.refreshChapterMetadata(for: $0) }
@@ -155,6 +156,21 @@ final class QueueStore: ObservableObject {
     var selectedItem: WatchItem? {
         guard let selection else { return nil }
         return items.first { $0.id == selection }
+    }
+
+    func playbackSource(for item: WatchItem) -> VideoPlaybackSource? {
+        if let progressive = progressivePlaybackSources[item.id] { return progressive }
+        guard let localURL = item.localFileURL else { return nil }
+        return VideoPlaybackSource(videoURL: localURL)
+    }
+
+    func discardProgressivePlayback(for id: UUID) {
+        progressivePlaybackSources.removeValue(forKey: id)
+    }
+
+    func finishProgressivePlayback(for id: UUID) {
+        guard item(with: id)?.state == .ready else { return }
+        discardProgressivePlayback(for: id)
     }
 
     func accept(_ incoming: URL) {
@@ -213,6 +229,13 @@ final class QueueStore: ObservableObject {
             )
         }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func fetchAddVideoPreview(
+        for url: URL,
+        completion: @escaping (Swift.Result<DownloadEngine.Preview, Error>) -> Void
+    ) {
+        downloader.fetchPreview(sourceURL: url, completion: completion)
     }
 
     @discardableResult
@@ -319,6 +342,7 @@ final class QueueStore: ObservableObject {
             save()
             return
         }
+        progressivePlaybackSources.removeValue(forKey: id)
         update(id) {
             $0.state = .downloading
             $0.progressLabel = isRetry ? "Resuming download…" : "Preparing download…"
@@ -440,7 +464,7 @@ final class QueueStore: ObservableObject {
         guard !subtitleRefreshes.contains(id),
               let existing = item(with: id),
               existing.state == .ready,
-              existing.subtitleFilePath == nil,
+              existing.subtitleFileURL == nil,
               let url = URL(string: existing.urlString) else { return }
         subtitleRefreshes.insert(id)
         downloader.fetchSubtitle(
@@ -452,7 +476,7 @@ final class QueueStore: ObservableObject {
                 guard let self else { return }
                 self.subtitleRefreshes.remove(id)
                 guard case .success(let subtitleURL) = result else { return }
-                self.update(id) { $0.subtitleFilePath = subtitleURL?.path ?? "" }
+                self.update(id) { $0.subtitleFilePath = subtitleURL?.path }
                 self.save()
             }
         }
@@ -460,6 +484,7 @@ final class QueueStore: ObservableObject {
 
     func remove(_ id: UUID, deleteMedia: Bool = true) {
         cancelRecovery(for: id)
+        progressivePlaybackSources.removeValue(forKey: id)
         downloader.cancel(itemID: id)
         if deleteMedia {
             let prefix = id.uuidString + "."
@@ -482,6 +507,11 @@ final class QueueStore: ObservableObject {
     func openOriginal(_ id: UUID) {
         guard let value = item(with: id)?.urlString, let url = URL(string: value) else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    func revealLocalFile(_ id: UUID) {
+        guard let url = item(with: id)?.localFileURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     func revealMediaFolder() {
@@ -527,6 +557,13 @@ final class QueueStore: ObservableObject {
                 $0.progress = progress
                 $0.progressLabel = label.isEmpty ? "Downloading…" : label
             }
+        case .playbackSource(let source):
+            guard item(with: id)?.state == .downloading else { return }
+            progressivePlaybackSources[id] = source
+        case .subtitleFile(let url):
+            guard item(with: id) != nil else { return }
+            update(id) { $0.subtitleFilePath = url.path }
+            save()
         }
     }
 
@@ -542,7 +579,7 @@ final class QueueStore: ObservableObject {
                 $0.chapters = downloaded.metadata.chapters
                 $0.localFilePath = downloaded.fileURL.path
                 $0.thumbnailFilePath = downloaded.thumbnailFileURL?.path ?? ""
-                $0.subtitleFilePath = downloaded.subtitleFileURL?.path ?? ""
+                $0.subtitleFilePath = downloaded.subtitleFileURL?.path
                 $0.state = .ready
                 $0.progress = 1
                 $0.progressLabel = "Ready offline"

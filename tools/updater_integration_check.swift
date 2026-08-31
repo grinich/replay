@@ -130,7 +130,11 @@ private struct UpdaterIntegrationCheck {
                 currentVersion: UpdateVersion("1.0.0")!
             )
             let updater = AppUpdater(configuration: configuration)
-            updater.performMenuAction()
+            // Exercise the silent automatic path. If the local HTTP server is
+            // a fraction late to accept connections, a manual check would
+            // display a modal NSAlert and hang this headless test instead of
+            // reporting the failure through `phase` below.
+            updater.startAutomaticChecks()
 
             let deadline = Date().addingTimeInterval(20)
             while Date() < deadline {

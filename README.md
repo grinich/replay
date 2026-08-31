@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/grinich/replay/releases/latest/download/Replay-macOS.zip"><strong>Download the latest macOS build</strong></a>
+  <a href="https://github.com/grinich/replay/releases/latest/download/Replay.dmg"><strong>Download Replay for macOS</strong></a>
   ·
   <a href="https://github.com/grinich/replay/releases">All releases</a>
 </p>
@@ -30,16 +30,16 @@
 
 ## Install
 
-1. [Download the latest build](https://github.com/grinich/replay/releases/latest/download/Replay-macOS.zip).
-2. Unzip it and move **Replay.app** into Applications.
-3. Because the open-source build is not yet Apple-notarized, Control-click the app and choose **Open** the first time.
+1. [Download the latest DMG](https://github.com/grinich/replay/releases/latest/download/Replay.dmg).
+2. Open it and drag **Replay** into **Applications**.
+3. Open Replay normally from Applications.
 
-The release is universal for Apple silicon and Intel Macs and includes yt-dlp, ffmpeg, and Deno. No Homebrew setup is required. Replay requires macOS 13 or newer.
+The release is signed with a Developer ID certificate, notarized by Apple, universal for Apple silicon and Intel Macs, and includes yt-dlp, ffmpeg, and Deno. No Homebrew setup is required. Replay requires macOS 13 or newer.
 
 ## Add something to watch
 
-- Copy any block of text containing one or many links, bring Replay forward, and press **Command-V**.
-- Paste into the field at the top of the queue.
+- Copy a YouTube or X video URL and bring Replay forward. Replay offers a preview with its title, thumbnail, and length; press **Return** to add it or **Escape** to dismiss it.
+- Click **Add Video** at the top of the queue to enter any URL manually. **Command-V** opens the same prefilled preview from anywhere in the app.
 - Drag a URL, `.webloc`, or `.url` file onto the app window or its Dock icon.
 
 New items download in the background and are stored locally for offline playback. YouTube and X are the main targets, and other non-DRM sites supported by yt-dlp may work too.
@@ -59,7 +59,7 @@ New items download in the background and are stored locally for offline playback
 
 | Input | Action |
 | --- | --- |
-| `Command-V` | Add every URL on the clipboard |
+| `Command-V` | Preview the video URL on the clipboard |
 | `Space` | Play or pause |
 | `Left` / `Right` | Skip backward or forward 10 seconds |
 | `Up` / `Down` | Change playback speed by 0.1× |
@@ -97,7 +97,7 @@ The development build is written to `dist/Replay.app`. It uses bundled runtime t
 brew install yt-dlp ffmpeg deno
 ```
 
-To create the same self-contained universal archive published on GitHub:
+To create the same self-contained universal app, updater archive, and DMG published on GitHub:
 
 ```sh
 ./scripts/package_release.sh
@@ -105,14 +105,17 @@ To create the same self-contained universal archive published on GitHub:
 
 The first packaging run downloads checksum-verified yt-dlp and Deno release binaries and builds a portable LGPL ffmpeg from official source. Subsequent builds reuse the cached runtime artifacts under `.build`.
 
+Official releases additionally set `REPLAY_SIGNING_IDENTITY`, `REPLAY_NOTARIZE=1`, and a `REPLAY_NOTARY_PROFILE` created with `notarytool`. Development packages remain ad-hoc signed.
+
 ## Release workflow
 
 `main` is built and tested by GitHub Actions. A tag matching the version in `Resources/Info.plist`, such as `v0.4.0`, triggers the release workflow, which:
 
 1. Builds arm64 and x86_64 app binaries and combines them into a universal app.
 2. Bundles universal yt-dlp, ffmpeg, and Deno runtimes plus license notices.
-3. Verifies the app signature and runtime executables.
-4. Publishes `Replay-macOS.zip` and its SHA-256 checksum to GitHub Releases.
+3. Signs every Replay executable with Developer ID, hardened runtime, and a secure timestamp.
+4. Notarizes and staples the app and styled DMG, then verifies both with Gatekeeper.
+5. Publishes `Replay.dmg` for installation and a stapled-app `Replay-macOS.zip` for automatic updates, with SHA-256 checksums for both.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and release details.
 

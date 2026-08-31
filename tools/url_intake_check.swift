@@ -25,6 +25,19 @@ struct URLIntakeCheck {
 
         precondition(URLIntake.webURLs(from: "No links in this paragraph.").isEmpty)
         precondition(URLIntake.webURL(from: "https://example.com/single")?.absoluteString == "https://example.com/single")
+        precondition(
+            URLIntake.foregroundVideoURL(from: "Copied https://youtu.be/abc123?t=12")?.absoluteString
+                == "https://www.youtube.com/watch?v=abc123"
+        )
+        precondition(
+            URLIntake.foregroundVideoURL(from: "https://x.com/example/status/987654321?s=20")?.absoluteString
+                == "https://x.com/example/status/987654321"
+        )
+        precondition(URLIntake.foregroundVideoURL(from: "https://example.com/video") == nil)
+        precondition(URLIntake.youtubeVideoID(from: URL(string: "https://youtu.be/abc123?t=4")!) == "abc123")
+        precondition(URLIntake.youtubeVideoID(from: URL(string: "https://www.youtube.com/watch?v=abc123&t=4")!) == "abc123")
+        precondition(URLIntake.youtubeVideoID(from: URL(string: "https://www.youtube.com/shorts/short-id")!) == "short-id")
+        precondition(URLIntake.youtubeVideoID(from: URL(string: "https://x.com/example/status/123")!) == nil)
 
         let largeBlock = (0..<250)
             .map { "Item \($0): https://example.com/watch/\($0)" }

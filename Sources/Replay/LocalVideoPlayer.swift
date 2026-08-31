@@ -199,65 +199,26 @@ final class PictureInPicturePlayerView: NSView {
 }
 
 private final class PlayerVolumeScrollInterpreter {
-    private enum Axis {
-        case horizontal
-        case vertical
-    }
-
-    private var lockedAxis: Axis?
-    private var accumulatedX = 0.0
-    private var accumulatedY = 0.0
-
     func adjustment(for event: NSEvent) -> Double {
-        if event.phase.contains(.began) { reset() }
         guard PlayerVolumeScrollEventPolicy.shouldAdjust(
             isPrecise: event.hasPreciseScrollingDeltas,
             phase: event.phase,
             momentumPhase: event.momentumPhase
-        ) else {
-            reset()
-            return 0
-        }
+        ) else { return 0 }
 
-        if event.phase.isEmpty {
-            guard abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX) * 0.8 else { return 0 }
-            return PlayerVolumeScrollPolicy.adjustment(
-                deltaX: 0,
-                deltaY: event.scrollingDeltaY,
-                isPrecise: event.hasPreciseScrollingDeltas,
-                isMomentum: false
-            )
-        }
-
-        if event.hasPreciseScrollingDeltas {
-            accumulatedX += event.scrollingDeltaX
-            accumulatedY += event.scrollingDeltaY
-            if lockedAxis == nil {
-                let largestDistance = max(abs(accumulatedX), abs(accumulatedY))
-                guard largestDistance >= 0.75 else { return 0 }
-                lockedAxis = abs(accumulatedY) >= abs(accumulatedX) * 0.8
-                    ? .vertical
-                    : .horizontal
-            }
-        } else {
-            lockedAxis = abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX)
-                ? .vertical
-                : .horizontal
-        }
-
-        guard lockedAxis == .vertical else { return 0 }
+        // Decide from the current finger-driven event instead of waiting for
+        // an accumulated axis lock. That makes the first vertical delta take
+        // effect immediately while horizontal gestures still pass through as
+        // zero-volume changes.
+        let directionScale = PlayerVolumeScrollDirection.scale(
+            isDirectionInvertedFromDevice: event.isDirectionInvertedFromDevice
+        )
         return PlayerVolumeScrollPolicy.adjustment(
-            deltaX: 0,
-            deltaY: event.scrollingDeltaY,
+            deltaX: event.scrollingDeltaX * directionScale,
+            deltaY: event.scrollingDeltaY * directionScale,
             isPrecise: event.hasPreciseScrollingDeltas,
             isMomentum: false
         )
-    }
-
-    private func reset() {
-        lockedAxis = nil
-        accumulatedX = 0
-        accumulatedY = 0
     }
 }
 
@@ -271,11 +232,21 @@ enum PlayerVolumeScrollEventPolicy {
               !phase.contains(.ended),
               !phase.contains(.cancelled) else { return false }
 
-        // Trackpads and Magic Mouse report precise deltas. Only accept those
-        // while fingers are actively driving the gesture; phase-less precise
-        // events are trailing inertia on some macOS/device combinations.
-        guard isPrecise else { return true }
-        return phase.contains(.began) || phase.contains(.changed)
+        // `momentumPhase` is the macOS source of truth for inertia. Some
+        // smooth-scrolling mice emit precise, phase-less events while the
+        // wheel is actively moving, so dropping those would make direct input
+        // feel delayed or intermittently unresponsive.
+        return true
+    }
+}
+
+enum PlayerVolumeScrollDirection {
+    static func scale(isDirectionInvertedFromDevice: Bool) -> Double {
+        // AppKit automatically applies the user's natural-scrolling setting
+        // to scrollingDeltaX/Y. Volume is a physical gesture, not content
+        // scrolling, so compensate for that preference: fingers moving up
+        // always yield a positive adjustment and fingers down a negative one.
+        isDirectionInvertedFromDevice ? -1 : 1
     }
 }
 
@@ -288,13 +259,18 @@ enum PlayerVolumeScrollPolicy {
     ) -> Double {
         guard !isMomentum,
               deltaY.isFinite,
-              abs(deltaY) > abs(deltaX),
-              abs(deltaY) >= 0.05 else { return 0 }
+              deltaX.isFinite,
+              abs(deltaY) >= abs(deltaX),
+              abs(deltaY) >= 0.01 else { return 0 }
 
         if isPrecise {
-            return min(0.08, max(-0.08, deltaY * 0.006))
+            // Precise devices report many small points per gesture. Map each
+            // point directly to 0.1% volume and cap a single event at 1.5% so
+            // short movements remain useful for fine adjustment.
+            return min(0.015, max(-0.015, deltaY * 0.001))
         }
-        return deltaY > 0 ? 0.05 : -0.05
+        // One physical wheel notch is a small, predictable 2% adjustment.
+        return deltaY > 0 ? 0.02 : -0.02
     }
 }
 
@@ -372,6 +348,38 @@ enum HardwareMediaKeyEventPolicy {
     }
 }
 
+enum SystemMediaCommandSource: Equatable {
+    case hardwareKey
+    case remoteCommandCenter
+}
+
+enum SystemMediaCommandFamily: Equatable {
+    case playback
+    case skipForward
+    case skipBackward
+}
+
+enum SystemMediaCommandDeduplicationPolicy {
+    static let crossSourceWindow: TimeInterval = 0.35
+
+    static func shouldAccept(
+        previousSource: SystemMediaCommandSource?,
+        previousFamily: SystemMediaCommandFamily?,
+        previousTime: TimeInterval?,
+        source: SystemMediaCommandSource,
+        family: SystemMediaCommandFamily,
+        time: TimeInterval
+    ) -> Bool {
+        guard let previousSource,
+              let previousFamily,
+              let previousTime,
+              previousSource != source,
+              previousFamily == family else { return true }
+        let elapsed = time - previousTime
+        return elapsed < 0 || elapsed > crossSourceWindow
+    }
+}
+
 final class SystemMediaController {
     static let shared = SystemMediaController()
 
@@ -381,6 +389,9 @@ final class SystemMediaController {
     private var snapshot = PlaybackSnapshot.empty
     private weak var activePlayer: AVPlayer?
     private var commandTargets: [(command: MPRemoteCommand, target: Any)] = []
+    private var lastCommandSource: SystemMediaCommandSource?
+    private var lastCommandFamily: SystemMediaCommandFamily?
+    private var lastCommandTime: TimeInterval?
 
     private init() {}
 
@@ -421,41 +432,86 @@ final class SystemMediaController {
         commands.skipForwardCommand.preferredIntervals = [10]
         commands.skipBackwardCommand.preferredIntervals = [10]
 
-        addTarget(to: commands.playCommand) {
+        addTarget(to: commands.playCommand, family: .playback) {
             PlaybackCommandCenter.shared.play()
         }
-        addTarget(to: commands.pauseCommand) {
+        addTarget(to: commands.pauseCommand, family: .playback) {
             PlaybackCommandCenter.shared.pause()
         }
-        addTarget(to: commands.togglePlayPauseCommand) {
+        addTarget(to: commands.togglePlayPauseCommand, family: .playback) {
             PlaybackCommandCenter.shared.togglePlayback()
         }
         // Mac keyboards report the previous/next media buttons as track
         // commands, while Control Center can report explicit skip commands.
-        addTarget(to: commands.previousTrackCommand) {
+        addTarget(to: commands.previousTrackCommand, family: .skipBackward) {
             PlaybackCommandCenter.shared.skip(by: -10)
         }
-        addTarget(to: commands.nextTrackCommand) {
+        addTarget(to: commands.nextTrackCommand, family: .skipForward) {
             PlaybackCommandCenter.shared.skip(by: 10)
         }
-        addTarget(to: commands.skipBackwardCommand) {
+        addTarget(to: commands.skipBackwardCommand, family: .skipBackward) {
             PlaybackCommandCenter.shared.skip(by: -10)
         }
-        addTarget(to: commands.skipForwardCommand) {
+        addTarget(to: commands.skipForwardCommand, family: .skipForward) {
             PlaybackCommandCenter.shared.skip(by: 10)
         }
     }
 
-    private func addTarget(to command: MPRemoteCommand, action: @escaping () -> Void) {
-        let target = command.addTarget { _ in
+    private func addTarget(
+        to command: MPRemoteCommand,
+        family: SystemMediaCommandFamily,
+        action: @escaping () -> Void
+    ) {
+        let target = command.addTarget { [weak self] _ in
             // Media-key handlers may arrive off the main thread. Consume the
             // command immediately, then perform AVPlayer work on the main queue.
             DispatchQueue.main.async {
+                guard self?.acceptCommand(source: .remoteCommandCenter, family: family) == true else {
+                    return
+                }
                 action()
             }
             return .success
         }
         commandTargets.append((command, target))
+    }
+
+    @discardableResult
+    func handleHardwareMediaKey(_ action: HardwareMediaKeyAction) -> Bool {
+        let family: SystemMediaCommandFamily
+        switch action {
+        case .togglePlayback:
+            family = .playback
+        case .skip(let seconds):
+            family = seconds < 0 ? .skipBackward : .skipForward
+        }
+        guard acceptCommand(source: .hardwareKey, family: family) else { return true }
+
+        switch action {
+        case .togglePlayback:
+            return PlaybackCommandCenter.shared.togglePlayback()
+        case .skip(let seconds):
+            return PlaybackCommandCenter.shared.skip(by: seconds)
+        }
+    }
+
+    private func acceptCommand(
+        source: SystemMediaCommandSource,
+        family: SystemMediaCommandFamily,
+        time: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> Bool {
+        guard SystemMediaCommandDeduplicationPolicy.shouldAccept(
+            previousSource: lastCommandSource,
+            previousFamily: lastCommandFamily,
+            previousTime: lastCommandTime,
+            source: source,
+            family: family,
+            time: time
+        ) else { return false }
+        lastCommandSource = source
+        lastCommandFamily = family
+        lastCommandTime = time
+        return true
     }
 
     func setItem(title: String, author: String) {
@@ -498,6 +554,9 @@ final class SystemMediaController {
             center.nowPlayingInfo = nil
         }
         activePlayer = nil
+        lastCommandSource = nil
+        lastCommandFamily = nil
+        lastCommandTime = nil
     }
 }
 
@@ -733,8 +792,171 @@ struct AirPlayRoutePicker: NSViewRepresentable {
     }
 }
 
+private final class FullscreenPlaybackControlsState: ObservableObject {
+    @Published var snapshot: PlaybackSnapshot
+
+    init(snapshot: PlaybackSnapshot) {
+        self.snapshot = snapshot
+    }
+}
+
+private struct FullscreenPlaybackControlsOverlay: View {
+    @ObservedObject var state: FullscreenPlaybackControlsState
+    let togglePlayback: () -> Void
+    let skip: (Double) -> Void
+    let seek: (Double) -> Void
+    let toggleMute: () -> Void
+    let setPlaybackRate: (Double) -> Void
+    @State private var scrubTime: Double?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            controlButton(
+                systemImage: state.snapshot.isPlaying ? "pause.fill" : "play.fill",
+                help: state.snapshot.isPlaying ? "Pause (Space)" : "Play (Space)",
+                prominent: true,
+                action: togglePlayback
+            )
+            controlButton(systemImage: "gobackward.10", help: "Back 10 seconds") {
+                skip(-10)
+            }
+            controlButton(systemImage: "goforward.10", help: "Forward 10 seconds") {
+                skip(10)
+            }
+
+            Text(formatTime(displayTime))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.82))
+                .frame(minWidth: 46, alignment: .trailing)
+
+            Slider(
+                value: Binding(
+                    get: { min(displayTime, effectiveDuration) },
+                    set: { scrubTime = $0 }
+                ),
+                in: 0...effectiveDuration,
+                onEditingChanged: { editing in
+                    guard !editing, let scrubTime else { return }
+                    seek(scrubTime)
+                    self.scrubTime = nil
+                }
+            )
+            .tint(.accentColor)
+            .disabled(rawDuration <= 0)
+            .accessibilityLabel("Playback position")
+            .accessibilityValue("\(formatTime(displayTime)) of \(formatTime(effectiveDuration))")
+
+            Text("−\(formatTime(max(0, effectiveDuration - displayTime)))")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.82))
+                .frame(minWidth: 52, alignment: .leading)
+
+            Menu {
+                ForEach(PlaybackRatePolicy.supportedRates, id: \.self) { rate in
+                    Button {
+                        setPlaybackRate(rate)
+                    } label: {
+                        if rate == PlaybackRatePolicy.normalized(state.snapshot.playbackRate) {
+                            Label(rateLabel(rate), systemImage: "checkmark")
+                        } else {
+                            Text(rateLabel(rate))
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "speedometer")
+                    Text(rateLabel(state.snapshot.playbackRate))
+                        .monospacedDigit()
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.9))
+                .padding(.horizontal, 9)
+                .frame(height: 32)
+                .background(Color.white.opacity(0.1), in: Capsule())
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Choose playback speed")
+
+            AirPlayRoutePicker()
+                .frame(width: 34, height: 34)
+                .background(Color.white.opacity(0.08), in: Circle())
+                .help("Choose an AirPlay device")
+
+            controlButton(
+                systemImage: state.snapshot.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                help: state.snapshot.isMuted ? "Unmute" : "Mute",
+                action: toggleMute
+            )
+        }
+        .frame(maxWidth: 1100)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.16))
+        }
+        .shadow(color: .black.opacity(0.42), radius: 18, y: 6)
+        .padding(.horizontal, 24)
+        .padding(.bottom, 24)
+        .frame(maxWidth: .infinity, alignment: .bottom)
+    }
+
+    private func controlButton(
+        systemImage: String,
+        help: String,
+        prominent: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: prominent ? 17 : 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: prominent ? 40 : 34, height: prominent ? 40 : 34)
+                .background(
+                    prominent ? Color.accentColor : Color.white.opacity(0.1),
+                    in: Circle()
+                )
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
+    private var effectiveDuration: Double {
+        max(0.001, rawDuration)
+    }
+
+    private var rawDuration: Double {
+        max(0, state.snapshot.duration)
+    }
+
+    private var displayTime: Double {
+        scrubTime ?? state.snapshot.currentTime
+    }
+
+    private func formatTime(_ seconds: Double) -> String {
+        guard seconds.isFinite else { return "0:00" }
+        let total = max(0, Int(seconds.rounded()))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let remaining = total % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, remaining)
+            : String(format: "%d:%02d", minutes, remaining)
+    }
+
+    private func rateLabel(_ rate: Double) -> String {
+        String(format: "%.1f×", PlaybackRatePolicy.normalized(rate))
+    }
+}
+
 struct LocalVideoPlayer: NSViewRepresentable {
-    let url: URL
+    let source: VideoPlaybackSource
     let title: String
     let author: String
     let resumeAt: Double
@@ -743,13 +965,15 @@ struct LocalVideoPlayer: NSViewRepresentable {
     let onStateChange: (PlaybackSnapshot) -> Void
     let onVolumeChange: (Double) -> Void
     let onEnded: () -> Void
+    let onUnavailable: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             onProgress: onProgress,
             onStateChange: onStateChange,
             onVolumeChange: onVolumeChange,
-            onEnded: onEnded
+            onEnded: onEnded,
+            onUnavailable: onUnavailable
         )
     }
 
@@ -764,7 +988,7 @@ struct LocalVideoPlayer: NSViewRepresentable {
             action: #selector(Coordinator.handleVideoClick(_:))
         )
         view.addGestureRecognizer(click)
-        context.coordinator.load(url: url, title: title, author: author, resumeAt: resumeAt, into: view)
+        context.coordinator.load(source: source, title: title, author: author, resumeAt: resumeAt, into: view)
         return view
     }
 
@@ -780,10 +1004,27 @@ struct LocalVideoPlayer: NSViewRepresentable {
     }
 
     func updateNSView(_ view: PictureInPicturePlayerView, context: Context) {
-        if context.coordinator.currentURL != url {
-            context.coordinator.load(url: url, title: title, author: author, resumeAt: resumeAt, into: view)
+        if context.coordinator.currentSource != source {
+            // Persist the outgoing video's position through its original
+            // callbacks before retargeting this retained coordinator.
+            context.coordinator.stop()
+            context.coordinator.updateCallbacks(
+                onProgress: onProgress,
+                onStateChange: onStateChange,
+                onVolumeChange: onVolumeChange,
+                onEnded: onEnded,
+                onUnavailable: onUnavailable
+            )
+            context.coordinator.load(source: source, title: title, author: author, resumeAt: resumeAt, into: view)
             return
         }
+        context.coordinator.updateCallbacks(
+            onProgress: onProgress,
+            onStateChange: onStateChange,
+            onVolumeChange: onVolumeChange,
+            onEnded: onEnded,
+            onUnavailable: onUnavailable
+        )
         context.coordinator.updateMetadata(title: title, author: author)
         if let seekRequest {
             context.coordinator.seek(to: seekRequest)
@@ -795,7 +1036,7 @@ struct LocalVideoPlayer: NSViewRepresentable {
         view.playerLayer.player = nil
     }
 
-    final class Coordinator: NSObject, NSWindowDelegate {
+    final class Coordinator: NSObject, NSWindowDelegate, NSGestureRecognizerDelegate {
         private var player: AVPlayer?
         private weak var playerView: PictureInPicturePlayerView?
         private var backgroundPanel: NSPanel?
@@ -803,7 +1044,15 @@ struct LocalVideoPlayer: NSViewRepresentable {
         private weak var fullscreenWindow: NSWindow?
         private weak var fullscreenContainerView: NSView?
         private var fullscreenPlayerView: PictureInPicturePlayerView?
+        private var fullscreenControlsHost: NSHostingView<AnyView>?
+        private var fullscreenControlsState: FullscreenPlaybackControlsState?
+        private var fullscreenControlsHideWorkItem: DispatchWorkItem?
+        private var fullscreenPointerEventMonitor: Any?
+        private var fullscreenWindowAcceptedMouseMovedEvents: Bool?
+        private var fullscreenMenuIsTracking = false
         private var fullscreenToolbarWasVisible: Bool?
+        private var fullscreenApplicationPresentationOptions: NSApplication.PresentationOptions?
+        private var fullscreenTransitionShouldKeepPlaying: Bool?
         private var fullscreenObservers: [NSObjectProtocol] = []
         private var isVideoFullscreen = false
         private var shouldExitAfterEnteringFullscreen = false
@@ -812,47 +1061,86 @@ struct LocalVideoPlayer: NSViewRepresentable {
         private var endObserver: NSObjectProtocol?
         private var persistenceObserver: Any?
         private var stateObserver: Any?
+        private var itemStatusObserver: NSKeyValueObservation?
         private var externalPlaybackObserver: NSKeyValueObservation?
         private var reachedEnd = false
-        private let onProgress: (Double) -> Void
-        private let onStateChange: (PlaybackSnapshot) -> Void
-        private let onVolumeChange: (Double) -> Void
-        private let onEnded: () -> Void
+        private var onProgress: (Double) -> Void
+        private var onStateChange: (PlaybackSnapshot) -> Void
+        private var onVolumeChange: (Double) -> Void
+        private var onEnded: () -> Void
+        private var onUnavailable: () -> Void
         private var lastSeekRequestID: UUID?
         private var commandToken: UUID?
         private var preferredRate: Double = 1
         private var currentTitle = ""
         private var currentAuthor = ""
-        fileprivate var currentURL: URL?
+        private var pendingVolumeSave: DispatchWorkItem?
+        fileprivate var currentSource: VideoPlaybackSource?
 
         init(
             onProgress: @escaping (Double) -> Void,
             onStateChange: @escaping (PlaybackSnapshot) -> Void,
             onVolumeChange: @escaping (Double) -> Void,
-            onEnded: @escaping () -> Void
+            onEnded: @escaping () -> Void,
+            onUnavailable: @escaping () -> Void
         ) {
             self.onProgress = onProgress
             self.onStateChange = onStateChange
             self.onVolumeChange = onVolumeChange
             self.onEnded = onEnded
+            self.onUnavailable = onUnavailable
             super.init()
         }
 
+        func updateCallbacks(
+            onProgress: @escaping (Double) -> Void,
+            onStateChange: @escaping (PlaybackSnapshot) -> Void,
+            onVolumeChange: @escaping (Double) -> Void,
+            onEnded: @escaping () -> Void,
+            onUnavailable: @escaping () -> Void
+        ) {
+            self.onProgress = onProgress
+            self.onStateChange = onStateChange
+            self.onVolumeChange = onVolumeChange
+            self.onEnded = onEnded
+            self.onUnavailable = onUnavailable
+        }
+
         func load(
-            url: URL,
+            source: VideoPlaybackSource,
             title: String,
             author: String,
             resumeAt: Double,
             into view: PictureInPicturePlayerView
         ) {
             stop()
-            currentURL = url
+            currentSource = source
             currentTitle = title
             currentAuthor = author
             reachedEnd = false
             lastSeekRequestID = nil
             preferredRate = PlaybackRatePreference.load()
-            let playerItem = AVPlayerItem(url: url)
+            playerView = view
+            view.onVolumeScroll = { [weak self] adjustment in
+                self?.adjustVolume(by: adjustment)
+            }
+
+            installPlayerItem(
+                AVPlayerItem(asset: AVURLAsset(url: source.videoURL)),
+                title: title,
+                author: author,
+                resumeAt: resumeAt,
+                into: view
+            )
+        }
+
+        private func installPlayerItem(
+            _ playerItem: AVPlayerItem,
+            title: String,
+            author: String,
+            resumeAt: Double,
+            into view: PictureInPicturePlayerView
+        ) {
             playerItem.audioTimePitchAlgorithm = PlaybackAudioPolicy.timePitchAlgorithm
             let player = AVPlayer(playerItem: playerItem)
             player.allowsExternalPlayback = true
@@ -861,9 +1149,6 @@ struct LocalVideoPlayer: NSViewRepresentable {
             self.player = player
             playerView = view
             view.playerLayer.player = player
-            view.onVolumeScroll = { [weak self] adjustment in
-                self?.adjustVolume(by: adjustment)
-            }
             backgroundOverlayDismissed = false
             observeApplicationActivation()
             commandToken = PlaybackCommandCenter.shared.register(
@@ -879,6 +1164,10 @@ struct LocalVideoPlayer: NSViewRepresentable {
             )
             SystemMediaController.shared.activate(player: player)
             SystemMediaController.shared.setItem(title: title, author: author)
+            itemStatusObserver = playerItem.observe(\.status, options: [.new]) { [weak self] item, _ in
+                guard item.status == .failed else { return }
+                DispatchQueue.main.async { self?.onUnavailable() }
+            }
             externalPlaybackObserver = player.observe(
                 \.isExternalPlaybackActive,
                 options: [.initial, .new]
@@ -990,9 +1279,22 @@ struct LocalVideoPlayer: NSViewRepresentable {
             let volume = PlaybackVolumePreference.normalized(Double(player.volume) + amount)
             player.volume = Float(volume)
             if volume > 0, player.isMuted { player.isMuted = false }
-            PlaybackVolumePreference.save(volume)
-            publishSnapshot()
+
+            // Audio and the HUD are the interactive path: update both before
+            // doing persistence or media-center work. Publishing now-playing
+            // state for every trackpad delta can block AppKit long enough for
+            // later scroll events to visibly catch up.
             onVolumeChange(volume)
+            scheduleVolumeSave(volume)
+        }
+
+        private func scheduleVolumeSave(_ volume: Double) {
+            pendingVolumeSave?.cancel()
+            let workItem = DispatchWorkItem {
+                PlaybackVolumePreference.save(volume)
+            }
+            pendingVolumeSave = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: workItem)
         }
 
         private func adjustPlaybackRate(by amount: Double) {
@@ -1022,7 +1324,10 @@ struct LocalVideoPlayer: NSViewRepresentable {
             if isVideoFullscreen {
                 return exitFullscreen()
             }
-            guard let window = playerView?.window,
+            guard let player,
+                  let window = playerView?.window else { return false }
+            let shouldKeepPlaying = player.timeControlStatus != .paused
+            guard
                   beginFullscreenPresentation(in: window) else { return false }
 
             // If the user already put the window in a native full-screen
@@ -1030,6 +1335,7 @@ struct LocalVideoPlayer: NSViewRepresentable {
             // presentation. Otherwise use NSWindow's native transition so
             // Mission Control and trackpad Space switching work normally.
             if !window.styleMask.contains(.fullScreen) {
+                fullscreenTransitionShouldKeepPlaying = shouldKeepPlaying
                 window.toggleFullScreen(nil)
             }
             return true
@@ -1040,6 +1346,9 @@ struct LocalVideoPlayer: NSViewRepresentable {
 
             if isVideoFullscreen {
                 if window.styleMask.contains(.fullScreen) {
+                    fullscreenTransitionShouldKeepPlaying = player.map {
+                        $0.timeControlStatus != .paused
+                    }
                     window.toggleFullScreen(nil)
                 } else {
                     // The native transition has not reached didEnter yet.
@@ -1059,44 +1368,73 @@ struct LocalVideoPlayer: NSViewRepresentable {
             guard let player,
                   let contentView = window.contentView,
                   let containerView = contentView.superview else { return false }
+            let shouldKeepPlaying = player.timeControlStatus != .paused
 
             hideBackgroundPlayer(animated: false, restoreInline: true)
             fullscreenToolbarWasVisible = window.toolbar?.isVisible
             window.toolbar?.isVisible = false
+            fullscreenApplicationPresentationOptions = NSApp.presentationOptions
+            var presentationOptions = NSApp.presentationOptions
+            presentationOptions.insert(.autoHideMenuBar)
+            presentationOptions.insert(.autoHideDock)
+            NSApp.presentationOptions = presentationOptions
 
             // Install above the window's frame view, not inside SwiftUI's
             // hosting view. NavigationSplitView can reorder hosting subviews
             // during the native full-screen transition, which would otherwise
             // put this surface behind the sidebar and detail content.
             let fullscreenView = PictureInPicturePlayerView(frame: containerView.bounds)
-            fullscreenView.translatesAutoresizingMaskIntoConstraints = false
             fullscreenView.wantsLayer = true
             fullscreenView.layer?.backgroundColor = NSColor.black.cgColor
             fullscreenView.playerLayer.videoGravity = .resizeAspect
             fullscreenView.onVolumeScroll = { [weak self] adjustment in
                 self?.adjustVolume(by: adjustment)
             }
-            fullscreenView.addGestureRecognizer(NSClickGestureRecognizer(
+            let fullscreenClick = NSClickGestureRecognizer(
                 target: self,
                 action: #selector(handleVideoClick(_:))
-            ))
+            )
+            fullscreenClick.delegate = self
+            fullscreenView.addGestureRecognizer(fullscreenClick)
 
             playerView?.playerLayer.player = nil
             fullscreenView.playerLayer.player = player
-            containerView.addSubview(fullscreenView, positioned: .above, relativeTo: nil)
+            // Reparenting an AVPlayer between layers can transiently restore a
+            // nonzero rate. Reassert a paused state immediately instead of
+            // letting the native full-screen animation resume the video.
+            if !shouldKeepPlaying { player.pause() }
+            let controlsState = FullscreenPlaybackControlsState(
+                snapshot: currentSnapshot(for: player)
+            )
+            let controls = FullscreenPlaybackControlsOverlay(
+                state: controlsState,
+                togglePlayback: { [weak self] in self?.togglePlayback() },
+                skip: { [weak self] seconds in self?.skip(by: seconds) },
+                seek: { [weak self] time in self?.seekFromFullscreen(to: time) },
+                toggleMute: { [weak self] in self?.toggleMute() },
+                setPlaybackRate: { [weak self] rate in self?.setPlaybackRate(rate) }
+            )
+            let controlsHost = NSHostingView(rootView: AnyView(controls))
+            controlsHost.translatesAutoresizingMaskIntoConstraints = false
+            controlsHost.wantsLayer = true
+            controlsHost.layer?.backgroundColor = NSColor.clear.cgColor
+            fullscreenView.addSubview(controlsHost, positioned: .above, relativeTo: nil)
             NSLayoutConstraint.activate([
-                fullscreenView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
-                fullscreenView.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
-                fullscreenView.topAnchor.constraint(equalTo: containerView.topAnchor),
-                fullscreenView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor)
+                controlsHost.leadingAnchor.constraint(equalTo: fullscreenView.leadingAnchor),
+                controlsHost.trailingAnchor.constraint(equalTo: fullscreenView.trailingAnchor),
+                controlsHost.bottomAnchor.constraint(equalTo: fullscreenView.bottomAnchor)
             ])
+            installFullscreenView(fullscreenView, in: containerView)
 
             fullscreenWindow = window
             fullscreenContainerView = containerView
             fullscreenPlayerView = fullscreenView
+            fullscreenControlsState = controlsState
+            fullscreenControlsHost = controlsHost
             isVideoFullscreen = true
             shouldExitAfterEnteringFullscreen = false
             observeFullscreenTransitions(for: window)
+            startFullscreenControlsAutoHide(in: window)
             return true
         }
 
@@ -1109,10 +1447,26 @@ struct LocalVideoPlayer: NSViewRepresentable {
                     object: window,
                     queue: .main
                 ) { [weak self, weak window] _ in
-                    guard let self, let window,
-                          self.isVideoFullscreen,
-                          self.shouldExitAfterEnteringFullscreen else { return }
+                    guard let self, let window, self.isVideoFullscreen else { return }
+
+                    // AppKit reconstructs and reorders parts of NSThemeFrame
+                    // while entering a native full-screen Space. Reattach the
+                    // video to that final frame so a newly-created title-bar
+                    // surface cannot remain above it as a thin white strip.
+                    if let fullscreenView = self.fullscreenPlayerView,
+                       let containerView = window.contentView?.superview {
+                        self.installFullscreenView(fullscreenView, in: containerView)
+                    }
+                    self.restorePlaybackStateAfterFullscreenTransition()
+                    // Give the user the full idle interval after the native
+                    // Space animation finishes, not from when it began.
+                    self.revealFullscreenControls()
+
+                    guard self.shouldExitAfterEnteringFullscreen else { return }
                     self.shouldExitAfterEnteringFullscreen = false
+                    self.fullscreenTransitionShouldKeepPlaying = self.player.map {
+                        $0.timeControlStatus != .paused
+                    }
                     window.toggleFullScreen(nil)
                 },
                 center.addObserver(
@@ -1122,11 +1476,149 @@ struct LocalVideoPlayer: NSViewRepresentable {
                 ) { [weak self] _ in
                     self?.finishFullscreenPresentation(restoreInline: true)
                 },
+                center.addObserver(
+                    forName: NSMenu.didBeginTrackingNotification,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.fullscreenMenuIsTracking = true
+                    self?.revealFullscreenControls()
+                },
+                center.addObserver(
+                    forName: NSMenu.didEndTrackingNotification,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.fullscreenMenuIsTracking = false
+                    self?.scheduleFullscreenControlsHide()
+                },
             ]
+        }
+
+        private func startFullscreenControlsAutoHide(in window: NSWindow) {
+            fullscreenWindowAcceptedMouseMovedEvents = window.acceptsMouseMovedEvents
+            window.acceptsMouseMovedEvents = true
+
+            fullscreenPointerEventMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [
+                    .mouseMoved,
+                    .leftMouseDown,
+                    .leftMouseDragged,
+                    .rightMouseDown,
+                    .rightMouseDragged,
+                    .scrollWheel,
+                ]
+            ) { [weak self, weak window] event in
+                if let self, let window, event.window === window, self.isVideoFullscreen {
+                    self.revealFullscreenControls()
+                }
+                return event
+            }
+
+            revealFullscreenControls()
+        }
+
+        private func revealFullscreenControls() {
+            guard isVideoFullscreen, let controlsHost = fullscreenControlsHost else { return }
+            fullscreenControlsHideWorkItem?.cancel()
+            NSCursor.setHiddenUntilMouseMoves(false)
+            controlsHost.isHidden = false
+
+            if controlsHost.alphaValue < 0.999 {
+                let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.15
+                guard duration > 0 else {
+                    controlsHost.alphaValue = 1
+                    scheduleFullscreenControlsHide()
+                    return
+                }
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = duration
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    controlsHost.animator().alphaValue = 1
+                }
+            }
+
+            scheduleFullscreenControlsHide()
+        }
+
+        private func scheduleFullscreenControlsHide() {
+            fullscreenControlsHideWorkItem?.cancel()
+            guard isVideoFullscreen, !fullscreenMenuIsTracking else { return }
+
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.hideFullscreenControls()
+            }
+            fullscreenControlsHideWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: workItem)
+        }
+
+        private func hideFullscreenControls() {
+            guard isVideoFullscreen,
+                  !fullscreenMenuIsTracking,
+                  let controlsHost = fullscreenControlsHost else { return }
+            fullscreenControlsHideWorkItem = nil
+
+            let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.15
+            guard duration > 0 else {
+                controlsHost.alphaValue = 0
+                controlsHost.isHidden = true
+                NSCursor.setHiddenUntilMouseMoves(true)
+                return
+            }
+
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = duration
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                controlsHost.animator().alphaValue = 0
+            }, completionHandler: { [weak self, weak controlsHost] in
+                guard let self, let controlsHost,
+                      self.fullscreenControlsHost === controlsHost,
+                      controlsHost.alphaValue <= 0.001 else { return }
+                controlsHost.isHidden = true
+                NSCursor.setHiddenUntilMouseMoves(true)
+            })
+        }
+
+        private func stopFullscreenControlsAutoHide(window: NSWindow?) {
+            fullscreenControlsHideWorkItem?.cancel()
+            fullscreenControlsHideWorkItem = nil
+            if let fullscreenPointerEventMonitor {
+                NSEvent.removeMonitor(fullscreenPointerEventMonitor)
+                self.fullscreenPointerEventMonitor = nil
+            }
+            if let fullscreenWindowAcceptedMouseMovedEvents {
+                window?.acceptsMouseMovedEvents = fullscreenWindowAcceptedMouseMovedEvents
+            }
+            self.fullscreenWindowAcceptedMouseMovedEvents = nil
+            fullscreenMenuIsTracking = false
+            NSCursor.setHiddenUntilMouseMoves(false)
+        }
+
+        private func installFullscreenView(
+            _ fullscreenView: PictureInPicturePlayerView,
+            in containerView: NSView
+        ) {
+            fullscreenView.removeFromSuperview()
+
+            // Frame-based sizing is intentional here. NSThemeFrame changes
+            // size several times during the native transition; autoresizing
+            // follows those changes immediately without waiting for an Auto
+            // Layout pass and avoids transient invalid constraint geometry.
+            fullscreenView.translatesAutoresizingMaskIntoConstraints = true
+            fullscreenView.frame = containerView.bounds
+            fullscreenView.autoresizingMask = [.width, .height]
+            containerView.addSubview(fullscreenView, positioned: .above, relativeTo: nil)
+            fullscreenContainerView = containerView
+            fullscreenView.needsLayout = true
+            fullscreenView.layoutSubtreeIfNeeded()
         }
 
         private func finishFullscreenPresentation(restoreInline: Bool) {
             let window = fullscreenWindow
+            stopFullscreenControlsAutoHide(window: window)
+            fullscreenControlsHost?.removeFromSuperview()
+            fullscreenControlsHost = nil
+            fullscreenControlsState = nil
             fullscreenPlayerView?.playerLayer.player = nil
             fullscreenPlayerView?.onVolumeScroll = nil
             fullscreenPlayerView?.removeFromSuperview()
@@ -1136,6 +1628,10 @@ struct LocalVideoPlayer: NSViewRepresentable {
                 window?.toolbar?.isVisible = fullscreenToolbarWasVisible
             }
             self.fullscreenToolbarWasVisible = nil
+            if let fullscreenApplicationPresentationOptions {
+                NSApp.presentationOptions = fullscreenApplicationPresentationOptions
+            }
+            self.fullscreenApplicationPresentationOptions = nil
             fullscreenWindow = nil
             isVideoFullscreen = false
             shouldExitAfterEnteringFullscreen = false
@@ -1144,6 +1640,20 @@ struct LocalVideoPlayer: NSViewRepresentable {
             if restoreInline, backgroundPanel == nil, let player {
                 playerView?.playerLayer.player = player
             }
+            restorePlaybackStateAfterFullscreenTransition()
+        }
+
+        private func restorePlaybackStateAfterFullscreenTransition() {
+            guard let shouldKeepPlaying = fullscreenTransitionShouldKeepPlaying,
+                  let player else { return }
+            fullscreenTransitionShouldKeepPlaying = nil
+
+            if shouldKeepPlaying {
+                if player.timeControlStatus == .paused { startPlayback(player) }
+            } else {
+                player.pause()
+            }
+            publishSnapshot()
         }
 
         private func removeFullscreenObservers() {
@@ -1325,6 +1835,16 @@ struct LocalVideoPlayer: NSViewRepresentable {
             togglePlayback()
         }
 
+        func gestureRecognizer(
+            _ gestureRecognizer: NSGestureRecognizer,
+            shouldAttemptToRecognizeWith event: NSEvent
+        ) -> Bool {
+            guard let fullscreenPlayerView,
+                  gestureRecognizer.view === fullscreenPlayerView else { return true }
+            let point = fullscreenPlayerView.convert(event.locationInWindow, from: nil)
+            return fullscreenPlayerView.hitTest(point) === fullscreenPlayerView
+        }
+
         func windowWillClose(_ notification: Notification) {
             guard let panel = notification.object as? NSPanel,
                   backgroundPanel === panel else { return }
@@ -1352,11 +1872,22 @@ struct LocalVideoPlayer: NSViewRepresentable {
             }
         }
 
-        private func publishSnapshot() {
+        private func publishSnapshot(updateMediaCenter: Bool = true) {
             guard let player else { return }
+            let snapshot = currentSnapshot(for: player)
+            DispatchQueue.main.async { [weak self, onStateChange] in
+                self?.fullscreenControlsState?.snapshot = snapshot
+                onStateChange(snapshot)
+            }
+            if updateMediaCenter, PlaybackCommandCenter.shared.isActive(commandToken) {
+                SystemMediaController.shared.update(snapshot)
+            }
+        }
+
+        private func currentSnapshot(for player: AVPlayer) -> PlaybackSnapshot {
             let rawCurrent = player.currentTime().seconds
             let rawDuration = player.currentItem?.duration.seconds ?? .nan
-            let snapshot = PlaybackSnapshot(
+            return PlaybackSnapshot(
                 currentTime: rawCurrent.isFinite ? max(0, rawCurrent) : 0,
                 duration: rawDuration.isFinite ? max(0, rawDuration) : 0,
                 isPlaying: player.timeControlStatus != .paused,
@@ -1365,23 +1896,25 @@ struct LocalVideoPlayer: NSViewRepresentable {
                 playbackRate: preferredRate,
                 isExternalPlaybackActive: player.isExternalPlaybackActive
             )
-            DispatchQueue.main.async { [onStateChange] in
-                onStateChange(snapshot)
-            }
-            if PlaybackCommandCenter.shared.isActive(commandToken) {
-                SystemMediaController.shared.update(snapshot)
-            }
+        }
+
+        private func seekFromFullscreen(to time: Double) {
+            let shouldKeepPlaying = player?.timeControlStatus != .paused
+            seek(to: PlayerSeekRequest(time: time, shouldPlay: shouldKeepPlaying))
         }
 
         func stop() {
             _ = exitFullscreen()
             hideBackgroundPlayer(animated: false, restoreInline: false)
             finishFullscreenPresentation(restoreInline: false)
+            pendingVolumeSave?.cancel()
+            pendingVolumeSave = nil
             for observer in applicationObservers {
                 NotificationCenter.default.removeObserver(observer)
             }
             applicationObservers.removeAll()
             if let player {
+                PlaybackVolumePreference.save(Double(player.volume))
                 player.pause()
                 if !reachedEnd {
                     let seconds = player.currentTime().seconds
@@ -1410,6 +1943,7 @@ struct LocalVideoPlayer: NSViewRepresentable {
             }
             persistenceObserver = nil
             stateObserver = nil
+            itemStatusObserver = nil
             externalPlaybackObserver = nil
             player = nil
             if let endObserver {
@@ -1423,7 +1957,7 @@ struct LocalVideoPlayer: NSViewRepresentable {
             playerView?.playerLayer.player = nil
             playerView?.onVolumeScroll = nil
             playerView = nil
-            currentURL = nil
+            currentSource = nil
             currentTitle = ""
             currentAuthor = ""
         }

@@ -5,55 +5,34 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var store: QueueStore
     @EnvironmentObject private var inbox: URLInbox
-    @State private var urlText = ""
     @State private var isDropTarget = false
     @State private var itemToDelete: WatchItem?
     @State private var detailSelection: UUID?
-    @State private var detailSelectionTask: Task<Void, Never>?
     @State private var knownItemIDs: Set<UUID> = []
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var queueRowFrames: [UUID: CGRect] = [:]
-    @State private var windowWidth: CGFloat = 1320
-    @State private var urlBarFrame: CGRect = .zero
-    @FocusState private var isURLFieldFocused: Bool
+    @State private var isAddVideoPresented = false
+    @State private var addVideoURLText = ""
+    @State private var addVideoPreview: DownloadEngine.Preview?
+    @State private var addVideoPreviewError: String?
+    @State private var isAddVideoPreviewLoading = false
+    @State private var addVideoPreviewRequestID = UUID()
+    @State private var addVideoPreviewTask: Task<Void, Never>?
+    @FocusState private var isAddVideoURLFocused: Bool
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
-                .navigationSplitViewColumnWidth(min: 272, ideal: 312, max: 360)
-                .simultaneousGesture(
-                    SpatialTapGesture(coordinateSpace: .named("replay-window"))
-                        .onEnded(handleWindowTap)
-                )
+                .navigationSplitViewColumnWidth(min: 248, ideal: 292, max: 340)
         } detail: {
             detail
-                .simultaneousGesture(
-                    TapGesture().onEnded(dismissURLFieldFocus)
-                )
         }
         .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 980, minHeight: 640)
+        .frame(minWidth: 900, minHeight: 420)
         .coordinateSpace(name: "replay-window")
-        .onPreferenceChange(URLBarFramePreferenceKey.self) { urlBarFrame = $0 }
         .background {
-            ZStack {
-                WindowStyleConfigurator(title: store.selectedItem?.title ?? "Replay")
-                    .frame(width: 0, height: 0)
-
-                WindowWidthReader { width in
-                    guard abs(windowWidth - width) > 0.5 else { return }
-                    windowWidth = width
-                    if width < 1160,
-                       columnVisibility != .detailOnly,
-                       let selectedItem = store.selectedItem,
-                       !selectedItem.availableChapters.isEmpty {
-                        withAnimation(.easeInOut(duration: 0.22)) {
-                            columnVisibility = .detailOnly
-                        }
-                    }
-                }
+            WindowStyleConfigurator(title: store.selectedItem?.title ?? "Replay")
                 .frame(width: 0, height: 0)
-            }
         }
         .overlay(alignment: .top) {
             if let notice = store.intakeNotice {
@@ -68,19 +47,21 @@ struct ContentView: View {
             if detailSelection == nil { detailSelection = store.selection }
             knownItemIDs = Set(store.items.map(\.id))
             consumePendingURLs()
-            consumePendingClipboardValues()
+            consumeAddVideoRequest()
         }
-        .onDisappear { detailSelectionTask?.cancel() }
+        .onDisappear {
+            addVideoPreviewTask?.cancel()
+        }
         .onChange(of: store.selection) { selectedID in
-            updateDetailAfterSelectionPaints(selectedID)
+            updateDetailSelection(selectedID)
         }
         .onChange(of: inbox.urls) { urls in
             urls.forEach(store.accept)
             inbox.clear()
         }
-        .onChange(of: inbox.clipboardValues) { values in
-            values.forEach { store.accept(rawValue: $0) }
-            inbox.clearClipboard()
+        .onChange(of: inbox.addVideoRequest) { request in
+            guard let request else { return }
+            presentAddVideo(prefilledURL: request.url)
         }
         .alert("Couldn’t Add Links", isPresented: Binding(
             get: { store.lastIntakeError != nil },
@@ -122,18 +103,58 @@ struct ContentView: View {
             .allowsHitTesting(false)
 
             VStack(spacing: 0) {
-                DropAndAddBar(
-                    urlText: $urlText,
-                    isDropTarget: $isDropTarget,
-                    isURLFieldFocused: $isURLFieldFocused,
-                    submit: submitURL,
-                    receiveProviders: receiveProviders
-                )
-                .padding(.leading, 82)
-                .padding(.trailing, 54)
-                // NavigationSplitView supplies the native title-bar inset. Keep
-                // the add field in the unshifted center of that header so it
-                // shares a baseline with the traffic-light cluster.
+                GeometryReader { geometry in
+                    // Keep the labeled action between the native window-control
+                    // capsule and the pane divider, including at the minimum
+                    // sidebar width. The native capsule occupies about 80 points;
+                    // there is no separate trailing title-bar control to reserve.
+                    let leadingInset: CGFloat = 76
+                    let trailingInset: CGFloat = 12
+                    let availableWidth = max(0, geometry.size.width - leadingInset - trailingInset)
+                    // Keep this compact enough to leave the native sidebar
+                    // toggle exposed at the minimum pane width.
+                    let buttonWidth = min(104, availableWidth)
+                    // The detached title-bar host is laid out from the native
+                    // content-safe-area origin, about 56 points to the right of
+                    // this full-width sidebar marker. Compensate here so the
+                    // visible button uses the sidebar coordinates above.
+                    let titlebarHostOffset: CGFloat = 56
+
+                    if columnVisibility != .detailOnly {
+                        TitlebarInteractiveHost {
+                            AddVideoHeaderButton(
+                                isDropTarget: $isDropTarget,
+                                action: { presentAddVideo(prefilledURL: nil) },
+                                receiveProviders: receiveProviders
+                            )
+                            .frame(width: buttonWidth, height: 32)
+                            .popover(isPresented: $isAddVideoPresented, arrowEdge: .top) {
+                                AddVideoPopover(
+                                    urlText: $addVideoURLText,
+                                    preview: addVideoPreview,
+                                    errorMessage: addVideoPreviewError,
+                                    isLoading: isAddVideoPreviewLoading,
+                                    isURLFocused: $isAddVideoURLFocused,
+                                    confirm: confirmAddVideo,
+                                    cancel: dismissAddVideo
+                                )
+                                .onChange(of: addVideoURLText) { _ in scheduleAddVideoPreview() }
+                                .onDisappear(perform: finishAddVideoPresentation)
+                            }
+                        }
+                        .position(
+                            // Anchor the leading edge after the window controls.
+                            // Centering in `availableWidth` makes the action drift
+                            // right as the sidebar grows and collide with its
+                            // native expand/collapse control.
+                            x: leadingInset + (buttonWidth / 2) - titlebarHostOffset,
+                            y: geometry.size.height / 2
+                        )
+                    }
+                }
+                // Give the native window controls and sidebar toggle explicit
+                // regions. Padding can be compressed by NavigationSplitView;
+                // fixed positioning cannot drift underneath either control.
                 .frame(height: 46)
 
                 Divider()
@@ -154,9 +175,10 @@ struct ContentView: View {
             SidebarEmptyState()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollViewReader { proxy in
-                ScrollView(.vertical) {
-                    LazyVStack(alignment: .leading, spacing: 4, pinnedViews: [.sectionHeaders]) {
+            GeometryReader { listGeometry in
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        LazyVStack(alignment: .leading, spacing: 4, pinnedViews: [.sectionHeaders]) {
                         Color.clear
                             .frame(height: 0)
                             .id("queue-top")
@@ -193,32 +215,42 @@ struct ContentView: View {
                                 .padding(.top, queueItems.isEmpty ? 0 : 10)
                             }
                         }
+                        }
+                        // ScrollView proposes an unbounded content width. Give
+                        // rows the pane's concrete width so their ideal text
+                        // width can never push thumbnails under the window edge.
+                        .frame(width: max(0, listGeometry.size.width - 18), alignment: .leading)
+                        .padding(.horizontal, 9)
+                        .padding(.top, 8)
+                        .padding(.bottom, 12)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 9)
-                    .padding(.top, 8)
-                    .padding(.bottom, 12)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .scrollIndicators(.hidden)
-                .clipped()
-                .coordinateSpace(name: "queue-list")
-                .onPreferenceChange(QueueRowFramePreferenceKey.self) { queueRowFrames = $0 }
-                .onChange(of: store.items.map(\.id)) { itemIDs in
-                    let addedID = itemIDs.first { !knownItemIDs.contains($0) }
-                    knownItemIDs = Set(itemIDs)
-                    guard let addedID else { return }
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(addedID, anchor: .top)
+                    .frame(width: listGeometry.size.width, height: listGeometry.size.height, alignment: .topLeading)
+                    .scrollIndicators(.hidden)
+                    .clipped()
+                    .coordinateSpace(name: "queue-list")
+                    .onPreferenceChange(QueueRowFramePreferenceKey.self) { frames in
+                        // Row frames can be emitted more than once during one
+                        // NavigationSplitView layout pass. Defer and de-dupe
+                        // the state write so measuring the rows cannot feed
+                        // another layout back into the same render frame.
+                        guard frames != queueRowFrames else { return }
+                        DispatchQueue.main.async {
+                            guard frames != queueRowFrames else { return }
+                            queueRowFrames = frames
+                        }
                     }
-                }
-                .onAppear {
-                    // A persisted selection can be far down the queue. The
-                    // list itself should nevertheless start at its real top
-                    // after every launch, with the normal eight-point inset
-                    // above the newest item.
-                    DispatchQueue.main.async {
-                        proxy.scrollTo("queue-top", anchor: .top)
+                    .onChange(of: store.items.map(\.id)) { itemIDs in
+                        let addedID = itemIDs.first { !knownItemIDs.contains($0) }
+                        knownItemIDs = Set(itemIDs)
+                        guard let addedID else { return }
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(addedID, anchor: .top)
+                        }
+                    }
+                    .onAppear {
+                        DispatchQueue.main.async {
+                            proxy.scrollTo("queue-top", anchor: .top)
+                        }
                     }
                 }
             }
@@ -243,6 +275,9 @@ struct ContentView: View {
                 Button("Retry Download") { store.startDownload(for: item.id) }
             }
             Button("Open Original") { store.openOriginal(item.id) }
+            if item.localFileURL != nil {
+                Button("Open in Folder") { store.revealLocalFile(item.id) }
+            }
             Divider()
             Button("Remove", role: .destructive) { itemToDelete = item }
         }
@@ -264,33 +299,15 @@ struct ContentView: View {
            let item = store.items.first(where: { $0.id == detailSelection }) {
             VideoDetail(
                 item: item,
-                sidebarCollapsed: columnVisibility == .detailOnly,
-                windowWidth: windowWidth,
-                collapseSidebar: {
-                    withAnimation(.easeInOut(duration: 0.22)) {
-                        columnVisibility = .detailOnly
-                    }
-                }
+                sidebarCollapsed: columnVisibility == .detailOnly
             )
-                .id(item.id)
         } else {
             EmptyLibraryView(isDropTarget: $isDropTarget, receiveProviders: receiveProviders)
         }
     }
 
-    private func updateDetailAfterSelectionPaints(_ selectedID: UUID?) {
-        detailSelectionTask?.cancel()
-        detailSelectionTask = Task {
-            await Task.yield()
-            guard !Task.isCancelled, store.selection == selectedID else { return }
-            detailSelection = selectedID
-        }
-    }
-
-    private func submitURL() {
-        let value = urlText
-        urlText = ""
-        store.accept(rawValue: value)
+    private func updateDetailSelection(_ selectedID: UUID?) {
+        detailSelection = selectedID
     }
 
     private func consumePendingURLs() {
@@ -299,10 +316,9 @@ struct ContentView: View {
         inbox.clear()
     }
 
-    private func consumePendingClipboardValues() {
-        guard !inbox.clipboardValues.isEmpty else { return }
-        inbox.clipboardValues.forEach { store.accept(rawValue: $0) }
-        inbox.clearClipboard()
+    private func consumeAddVideoRequest() {
+        guard let request = inbox.addVideoRequest else { return }
+        presentAddVideo(prefilledURL: request.url)
     }
 
     private func receiveProviders(_ providers: [NSItemProvider]) -> Bool {
@@ -325,15 +341,68 @@ struct ContentView: View {
         return accepted
     }
 
-    private func handleWindowTap(_ tap: SpatialTapGesture.Value) {
-        guard !urlBarFrame.contains(tap.location) else { return }
-        dismissURLFieldFocus()
+    private func presentAddVideo(prefilledURL: URL?) {
+        addVideoPreviewTask?.cancel()
+        addVideoPreviewRequestID = UUID()
+        addVideoURLText = prefilledURL?.absoluteString ?? ""
+        addVideoPreview = nil
+        addVideoPreviewError = nil
+        isAddVideoPreviewLoading = false
+        isAddVideoPresented = true
+        DispatchQueue.main.async {
+            isAddVideoURLFocused = true
+            if prefilledURL != nil { scheduleAddVideoPreview(immediately: true) }
+        }
     }
 
-    private func dismissURLFieldFocus() {
-        guard isURLFieldFocused else { return }
-        isURLFieldFocused = false
+    private func scheduleAddVideoPreview(immediately: Bool = false) {
+        addVideoPreviewTask?.cancel()
+        let requestID = UUID()
+        addVideoPreviewRequestID = requestID
+        addVideoPreview = nil
+        addVideoPreviewError = nil
+        guard let url = URLIntake.webURL(from: addVideoURLText) else {
+            isAddVideoPreviewLoading = false
+            return
+        }
+        isAddVideoPreviewLoading = true
+        addVideoPreviewTask = Task {
+            if !immediately {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+            guard !Task.isCancelled, addVideoPreviewRequestID == requestID else { return }
+            store.fetchAddVideoPreview(for: url) { result in
+                DispatchQueue.main.async {
+                    guard addVideoPreviewRequestID == requestID else { return }
+                    isAddVideoPreviewLoading = false
+                    switch result {
+                    case .success(let preview): addVideoPreview = preview
+                    case .failure(let error): addVideoPreviewError = error.localizedDescription
+                    }
+                }
+            }
+        }
+    }
+
+    private func confirmAddVideo() {
+        guard let url = URLIntake.webURL(from: addVideoURLText) else {
+            addVideoPreviewError = "Enter a valid HTTP or HTTPS video URL."
+            return
+        }
+        store.accept(url)
+        dismissAddVideo()
+    }
+
+    private func dismissAddVideo() {
+        isAddVideoPresented = false
+    }
+
+    private func finishAddVideoPresentation() {
+        addVideoPreviewTask?.cancel()
+        addVideoPreviewRequestID = UUID()
+        isAddVideoURLFocused = false
         NSApp.keyWindow?.makeFirstResponder(nil)
+        inbox.clearAddVideoRequest()
     }
 }
 
@@ -342,14 +411,6 @@ private struct QueueRowFramePreferenceKey: PreferenceKey {
 
     static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
         value.merge(nextValue(), uniquingKeysWith: { _, new in new })
-    }
-}
-
-private struct URLBarFramePreferenceKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
-
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
-        value = nextValue()
     }
 }
 
@@ -432,12 +493,14 @@ private struct QueueRow: View, Equatable {
                         .tint(.accentColor)
                 }
             }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
             Spacer(minLength: 0)
         }
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 8)
         .padding(.vertical, 8)
+        .clipped()
         .background {
             if isSelected {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
@@ -731,16 +794,12 @@ private struct VideoDetail: View {
     @State private var seekRequest: PlayerSeekRequest?
     @State private var playback = PlaybackSnapshot.empty
     @State private var subtitleTrack: VideoSubtitleTrack?
-    @State private var isPlayerPrepared = false
-    @State private var playerPreparationTask: Task<Void, Never>?
     @State private var subtitleLoadTask: Task<Void, Never>?
     @State private var volumeHUDValue = PlaybackVolumePreference.load()
     @State private var volumeHUDVisible = false
     @State private var volumeHUDDismissalTask: Task<Void, Never>?
     let item: WatchItem
     let sidebarCollapsed: Bool
-    let windowWidth: CGFloat
-    let collapseSidebar: () -> Void
 
     var body: some View {
         detailBody
@@ -750,28 +809,30 @@ private struct VideoDetail: View {
     private var detailBody: some View {
         chapterLayout
             .onAppear {
-                preparePlayerAfterSelection()
+                store.refreshSubtitle(for: item.id)
                 loadSubtitles()
-                collapseSidebarForNarrowChapterLayoutIfNeeded()
             }
             .onDisappear {
-                playerPreparationTask?.cancel()
                 subtitleLoadTask?.cancel()
                 volumeHUDDismissalTask?.cancel()
+                store.finishProgressivePlayback(for: item.id)
             }
-            .onChange(of: item.localFilePath) { _ in preparePlayerAfterSelection() }
+            .onChange(of: item.id) { _ in
+                playback = .empty
+                seekRequest = nil
+                subtitleTrack = nil
+                store.refreshSubtitle(for: item.id)
+                loadSubtitles()
+            }
             .onChange(of: item.subtitleFilePath) { _ in loadSubtitles() }
-            .onChange(of: windowWidth) { _ in collapseSidebarForNarrowChapterLayoutIfNeeded() }
-            .onChange(of: sidebarCollapsed) { isCollapsed in
-                guard !isCollapsed, prefersOneSidePane, chaptersPresented else { return }
-                withAnimation(.easeInOut(duration: 0.22)) {
-                    chaptersPresented = false
-                }
-            }
     }
 
     private var usesCompactToolbarActions: Bool {
         !item.availableChapters.isEmpty
+    }
+
+    private var playbackSource: VideoPlaybackSource? {
+        store.playbackSource(for: item)
     }
 
     @ViewBuilder
@@ -782,16 +843,16 @@ private struct VideoDetail: View {
             centerPane
                 .inspector(isPresented: $chaptersPresented) {
                     chapterSidebar
-                        .inspectorColumnWidth(min: 232, ideal: 300, max: 400)
+                        .inspectorColumnWidth(min: 200, ideal: 264, max: 340)
                 }
         } else {
             HSplitView {
                 centerPane
-                    .frame(minWidth: 620)
+                    .frame(minWidth: 420)
 
                 if chaptersPresented {
                     chapterSidebar
-                        .frame(minWidth: 232, idealWidth: 300, maxWidth: 400)
+                        .frame(minWidth: 200, idealWidth: 264, maxWidth: 340)
                 }
             }
         }
@@ -803,6 +864,7 @@ private struct VideoDetail: View {
             Divider()
             mainContent
         }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .top)
     }
 
@@ -890,7 +952,7 @@ private struct VideoDetail: View {
                 PlayerStageLayout {
                     playerSurface
 
-                    if item.localFileURL != nil, item.state == .ready, isPlayerPrepared {
+                    if playbackSource != nil {
                         PlaybackControls(
                             snapshot: playback,
                             knownDuration: item.duration,
@@ -928,25 +990,21 @@ private struct VideoDetail: View {
     private var playerSurface: some View {
         ZStack(alignment: .bottom) {
             Group {
-                if let fileURL = item.localFileURL, item.state == .ready {
-                    if isPlayerPrepared {
-                        GeometryReader { geometry in
-                            LocalVideoPlayer(
-                                url: fileURL,
-                                title: item.title,
-                                author: item.author,
-                                resumeAt: item.resumablePosition,
-                                seekRequest: seekRequest,
-                                onProgress: { store.updatePlaybackPosition($0, for: item.id) },
-                                onStateChange: { playback = $0 },
-                                onVolumeChange: showVolumeHUD,
-                                onEnded: { store.markWatched(item.id) }
-                            )
-                            .id(fileURL)
-                            .frame(width: geometry.size.width, height: geometry.size.height)
-                        }
-                    } else {
-                        playerLoadingState
+                if let source = playbackSource {
+                    GeometryReader { geometry in
+                        LocalVideoPlayer(
+                            source: source,
+                            title: item.title,
+                            author: item.author,
+                            resumeAt: item.resumablePosition,
+                            seekRequest: seekRequest,
+                            onProgress: { store.updatePlaybackPosition($0, for: item.id) },
+                            onStateChange: { playback = $0 },
+                            onVolumeChange: showVolumeHUD,
+                            onEnded: { store.markWatched(item.id) },
+                            onUnavailable: { store.discardProgressivePlayback(for: item.id) }
+                        )
+                        .frame(width: geometry.size.width, height: geometry.size.height)
                     }
                 } else {
                     downloadState
@@ -973,7 +1031,10 @@ private struct VideoDetail: View {
             if volumeHUDVisible {
                 PlayerVolumeHUD(
                     volume: volumeHUDValue,
-                    isMuted: playback.isMuted || volumeHUDValue <= 0
+                    // The callback carries the player's effective volume and
+                    // arrives on the scroll event itself. Do not wait for the
+                    // asynchronously published playback snapshot to render it.
+                    isMuted: volumeHUDValue <= 0
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .allowsHitTesting(false)
@@ -986,17 +1047,6 @@ private struct VideoDetail: View {
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.12))
-        }
-    }
-
-    private func preparePlayerAfterSelection() {
-        playerPreparationTask?.cancel()
-        isPlayerPrepared = false
-        guard item.state == .ready, item.localFileURL != nil else { return }
-        playerPreparationTask = Task {
-            await Task.yield()
-            guard !Task.isCancelled else { return }
-            isPlayerPrepared = true
         }
     }
 
@@ -1015,9 +1065,15 @@ private struct VideoDetail: View {
 
     private func showVolumeHUD(_ volume: Double) {
         volumeHUDDismissalTask?.cancel()
-        volumeHUDValue = PlaybackVolumePreference.normalized(volume)
-        withAnimation(volumeHUDAnimation) {
-            volumeHUDVisible = true
+        var immediateValueTransaction = Transaction(animation: nil)
+        immediateValueTransaction.disablesAnimations = true
+        withTransaction(immediateValueTransaction) {
+            volumeHUDValue = PlaybackVolumePreference.normalized(volume)
+        }
+        if !volumeHUDVisible {
+            withAnimation(volumeHUDAnimation) {
+                volumeHUDVisible = true
+            }
         }
         volumeHUDDismissalTask = Task {
             try? await Task.sleep(nanoseconds: 900_000_000)
@@ -1118,22 +1174,9 @@ private struct VideoDetail: View {
     }
 
     private func toggleChapters() {
-        let willShow = !chaptersPresented
-        if willShow, prefersOneSidePane, !sidebarCollapsed {
-            collapseSidebar()
-        }
         withAnimation(.easeInOut(duration: 0.22)) {
-            chaptersPresented = willShow
+            chaptersPresented.toggle()
         }
-    }
-
-    private var prefersOneSidePane: Bool {
-        windowWidth < 1160 && !item.availableChapters.isEmpty
-    }
-
-    private func collapseSidebarForNarrowChapterLayoutIfNeeded() {
-        guard prefersOneSidePane, chaptersPresented, !sidebarCollapsed else { return }
-        collapseSidebar()
     }
 }
 
@@ -1178,10 +1221,20 @@ private struct PlayerVolumeHUD: View {
                 .symbolRenderingMode(.hierarchical)
                 .frame(width: 26)
 
-            ProgressView(value: isMuted ? 0 : volume)
-                .progressViewStyle(.linear)
-                .tint(.white)
-                .frame(width: 112)
+            GeometryReader { geometry in
+                let level = PlaybackVolumePreference.normalized(isMuted ? 0 : volume)
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.2))
+                    Capsule()
+                        .fill(Color.white)
+                        .frame(width: geometry.size.width * level)
+                }
+            }
+            .frame(width: 112, height: 5)
+            .transaction { transaction in
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
 
             Text("\(Int(((isMuted ? 0 : volume) * 100).rounded()))%")
                 .font(.caption.monospacedDigit().weight(.semibold))
@@ -1779,42 +1832,47 @@ private struct ChapterSidebar: View {
 
             Divider()
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 3) {
-                    ForEach(chapters) { chapter in
-                        Button {
-                            select(chapter)
-                        } label: {
-                            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                                Text(formatTime(chapter.startTime))
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(isCurrent(chapter) ? Color.accentColor : Color.secondary)
-                                    .frame(width: 48, alignment: .trailing)
-                                Text(chapter.title)
-                                    .font(.callout.weight(isCurrent(chapter) ? .semibold : .regular))
-                                    .foregroundStyle(.primary)
-                                    .multilineTextAlignment(.leading)
-                                    .lineLimit(2)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 10)
-                            .background {
-                                if isCurrent(chapter) {
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(Color.accentColor.opacity(0.13))
+            GeometryReader { geometry in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 3) {
+                        ForEach(chapters) { chapter in
+                            Button {
+                                select(chapter)
+                            } label: {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(formatTime(chapter.startTime))
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(isCurrent(chapter) ? Color.accentColor : Color.secondary)
+                                        .frame(width: 44, alignment: .trailing)
+                                    Text(chapter.title)
+                                        .font(.callout.weight(isCurrent(chapter) ? .semibold : .regular))
+                                        .foregroundStyle(.primary)
+                                        .multilineTextAlignment(.leading)
+                                        .lineLimit(2)
+                                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                                    Spacer(minLength: 0)
                                 }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 10)
+                                .background {
+                                    if isCurrent(chapter) {
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .fill(Color.accentColor.opacity(0.13))
+                                    }
+                                }
+                                .contentShape(Rectangle())
                             }
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
+                    .frame(width: max(0, geometry.size.width - 16), alignment: .leading)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 8)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 8)
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+                .scrollIndicators(.hidden)
+                .clipped()
             }
-            .scrollIndicators(.hidden)
         }
         .background(.ultraThinMaterial)
     }
@@ -1837,59 +1895,122 @@ private struct ChapterSidebar: View {
     }
 }
 
-private struct DropAndAddBar: View {
-    @Binding var urlText: String
+private struct AddVideoHeaderButton: View {
     @Binding var isDropTarget: Bool
-    var isURLFieldFocused: FocusState<Bool>.Binding
-    let submit: () -> Void
+    let action: () -> Void
     let receiveProviders: ([NSItemProvider]) -> Bool
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "link")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(isDropTarget ? Color.accentColor : Color.secondary)
-            TextField("Paste a URL or text", text: $urlText)
-                .textFieldStyle(.plain)
-                .frame(minWidth: 0, maxWidth: .infinity)
-                .focused(isURLFieldFocused)
-                .onSubmit(submit)
-                .onExitCommand(perform: removeFocus)
-            Button(action: submit) {
-                Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .bold))
-            }
-            .watchGlassButton(prominent: true)
-            .controlSize(.small)
-            .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        Button(action: action) {
+            Label("Add Video", systemImage: "plus")
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 7)
-        .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32)
-        .watchGlass(
-            .clear,
-            tint: isDropTarget ? Color.accentColor.opacity(0.12) : nil,
-            interactive: true,
-            in: RoundedRectangle(cornerRadius: 15, style: .continuous)
+        .font(.callout.weight(.medium))
+        .watchGlassButton()
+        .controlSize(.regular)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .tint(isDropTarget ? Color.accentColor : nil)
+        .onDrop(
+            of: [UTType.url, UTType.fileURL, UTType.plainText],
+            isTargeted: $isDropTarget,
+            perform: receiveProviders
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .strokeBorder(isDropTarget ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.07))
-        }
-        .background {
-            GeometryReader { geometry in
-                Color.clear.preference(
-                    key: URLBarFramePreferenceKey.self,
-                    value: geometry.frame(in: .named("replay-window"))
-                )
+        .help("Add a video")
+    }
+}
+
+private struct AddVideoPopover: View {
+    @Binding var urlText: String
+    let preview: DownloadEngine.Preview?
+    let errorMessage: String?
+    let isLoading: Bool
+    var isURLFocused: FocusState<Bool>.Binding
+    let confirm: () -> Void
+    let cancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add Video")
+                .font(.headline)
+
+            TextField("Paste a video URL", text: $urlText)
+                .textFieldStyle(.roundedBorder)
+                .focused(isURLFocused)
+                .onSubmit(confirm)
+
+            if isLoading {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading video details…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(minHeight: 72)
+            } else if let preview {
+                HStack(alignment: .top, spacing: 12) {
+                    previewImage(preview.thumbnailData)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(preview.title)
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(2)
+                        HStack(spacing: 5) {
+                            if !preview.author.isEmpty { Text(preview.author).lineLimit(1) }
+                            if let duration = preview.duration {
+                                if !preview.author.isEmpty { Text("·") }
+                                Text(formatDuration(duration))
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(minHeight: 38, alignment: .leading)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: cancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Add Video", action: confirm)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(URLIntake.webURL(from: urlText) == nil)
             }
         }
-        .onDrop(of: [UTType.url, UTType.fileURL, UTType.plainText], isTargeted: $isDropTarget, perform: receiveProviders)
+        .padding(16)
+        .frame(width: 330)
+        .onExitCommand(perform: cancel)
     }
 
-    private func removeFocus() {
-        isURLFieldFocused.wrappedValue = false
-        NSApp.keyWindow?.makeFirstResponder(nil)
+    @ViewBuilder
+    private func previewImage(_ data: Data?) -> some View {
+        if let data, let image = NSImage(data: data) {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 112, height: 63)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.secondary.opacity(0.1))
+                .frame(width: 112, height: 63)
+                .overlay(Image(systemName: "play.rectangle").foregroundStyle(.secondary))
+        }
+    }
+
+    private func formatDuration(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let remaining = total % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, remaining)
+            : String(format: "%d:%02d", minutes, remaining)
     }
 }
 

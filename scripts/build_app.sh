@@ -9,6 +9,7 @@ macos_dir="$contents_dir/MacOS"
 helpers_dir="$contents_dir/Helpers"
 iconset_dir="$project_dir/.build/Replay.iconset"
 bundled_tools_dir="${REPLAY_BUNDLED_TOOLS_DIR:-}"
+signing_identity="${REPLAY_SIGNING_IDENTITY:--}"
 
 if [[ "${REPLAY_UNIVERSAL:-0}" == "1" ]]; then
     arm_build="$project_dir/.build/release-arm64"
@@ -65,5 +66,31 @@ if [[ -n "$bundled_tools_dir" ]]; then
     fi
 fi
 
-codesign --force --deep --sign - "$app_dir"
+if [[ "$signing_identity" == "-" ]]; then
+    codesign --force --deep --sign - "$app_dir"
+else
+    signing_args=(
+        --force
+        --sign "$signing_identity"
+        --options runtime
+        --timestamp
+    )
+
+    # Sign each executable explicitly from the inside out. Apple deprecates
+    # --deep for signing because it can silently replace nested signatures.
+    # Deno ships with its own valid Developer ID signature and hardened-runtime
+    # entitlements, so leave that third-party signature intact.
+    codesign "${signing_args[@]}" "$helpers_dir/ReplayUpdater"
+    if [[ -d "$resources_dir/Tools" ]]; then
+        codesign "${signing_args[@]}" \
+            --entitlements "$project_dir/Resources/yt-dlp.entitlements" \
+            "$resources_dir/Tools/yt-dlp"
+        codesign "${signing_args[@]}" "$resources_dir/Tools/ffmpeg"
+        codesign --verify --strict "$resources_dir/Tools/deno"
+    fi
+    codesign "${signing_args[@]}" "$macos_dir/Replay"
+    codesign "${signing_args[@]}" "$app_dir"
+fi
+
+codesign --verify --deep --strict "$app_dir"
 printf '%s\n' "$app_dir"

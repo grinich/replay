@@ -13,6 +13,10 @@ permissions:
 jobs:
   release:
     runs-on: macos-26
+    env:
+      SIGNING_IDENTITY: "Developer ID Application: Michael Grinich (${{ secrets.APPLE_TEAM_ID }})"
+      RELEASE_KEYCHAIN: ${{ runner.temp }}/replay-release.keychain-db
+      RELEASE_KEYCHAIN_PASSWORD: replay-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
       - name: Verify tag matches the app version
@@ -20,7 +24,49 @@ jobs:
         run: |
           version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)
           test "v$version" = "${GITHUB_REF_NAME}"
-      - name: Build self-contained universal app
+      - name: Import Developer ID certificate
+        env:
+          DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          test -n "$DEVELOPER_ID_P12_BASE64"
+          test -n "$DEVELOPER_ID_P12_PASSWORD"
+          printf '%s' "$DEVELOPER_ID_P12_BASE64" | base64 -D > "$RUNNER_TEMP/developer-id.p12"
+          security create-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$RELEASE_KEYCHAIN"
+          security unlock-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
+          security import "$RUNNER_TEMP/developer-id.p12" \
+            -k "$RELEASE_KEYCHAIN" \
+            -P "$DEVELOPER_ID_P12_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$RELEASE_KEYCHAIN_PASSWORD" \
+            "$RELEASE_KEYCHAIN"
+          security list-keychains -d user -s "$RELEASE_KEYCHAIN"
+          security find-identity -v -p codesigning "$RELEASE_KEYCHAIN" | grep -F "$SIGNING_IDENTITY"
+      - name: Store notarization credentials
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$APPLE_ID"
+          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
+          test -n "$APPLE_TEAM_ID"
+          xcrun notarytool store-credentials replay-ci \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --keychain "$RELEASE_KEYCHAIN"
+      - name: Build, sign, notarize, and package release
+        env:
+          REPLAY_SIGNING_IDENTITY: ${{ env.SIGNING_IDENTITY }}
+          REPLAY_NOTARIZE: "1"
+          REPLAY_NOTARY_PROFILE: replay-ci
+          REPLAY_NOTARY_KEYCHAIN: ${{ env.RELEASE_KEYCHAIN }}
         run: ./scripts/package_release.sh
       - name: Smoke test bundled runtimes
         run: |
@@ -31,10 +77,19 @@ jobs:
           "$app/Contents/Resources/Tools/ffmpeg" -version | head -1
           "$app/Contents/Resources/Tools/deno" --version | head -1
           codesign --verify --deep --strict "$app"
+          codesign -dvv "$app" 2>&1 | grep -F "$SIGNING_IDENTITY"
+          xcrun stapler validate "$app"
+          xcrun stapler validate dist/Replay.dmg
+          spctl --assess --type execute --verbose=2 "$app"
+          spctl --assess --type open --context context:primary-signature --verbose=2 dist/Replay.dmg
       - name: Attest release archive
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: dist/Replay-macOS.zip
+      - name: Attest DMG installer
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/Replay.dmg
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -42,3 +97,8 @@ jobs:
           files: |
             dist/Replay-macOS.zip
             dist/Replay-macOS.zip.sha256
+            dist/Replay.dmg
+            dist/Replay.dmg.sha256
+      - name: Delete temporary release keychain
+        if: always()
+        run: security delete-keychain "$RELEASE_KEYCHAIN" || true

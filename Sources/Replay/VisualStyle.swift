@@ -189,7 +189,7 @@ struct WindowStyleConfigurator: NSViewRepresentable {
         coordinator.centerTrafficLights(in: window)
         coordinator.scheduleSidebarToggleAlignment(in: window)
         coordinator.activationClickShield.attach(to: window)
-        let minimumSize = NSSize(width: 980, height: 640)
+        let minimumSize = NSSize(width: 900, height: 420)
         window.minSize = minimumSize
 
         // AppKit does not automatically enlarge a restored window that was
@@ -322,64 +322,6 @@ final class ForegroundActivationClickShield: NSView {
     }
 }
 
-/// Reports the real NSWindow width. A GeometryReader attached to a
-/// NavigationSplitView can inherit a column's proposed size during its own
-/// visibility transition, which makes it an unreliable source for deciding
-/// whether two side panes fit.
-struct WindowWidthReader: NSViewRepresentable {
-    let onChange: (CGFloat) -> Void
-
-    func makeNSView(context: Context) -> WindowWidthTrackingView {
-        let view = WindowWidthTrackingView()
-        view.onChange = onChange
-        return view
-    }
-
-    func updateNSView(_ view: WindowWidthTrackingView, context: Context) {
-        view.onChange = onChange
-        view.reportWidth()
-    }
-}
-
-final class WindowWidthTrackingView: NSView {
-    var onChange: ((CGFloat) -> Void)?
-    private var resizeObserver: NSObjectProtocol?
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        stopObserving()
-        guard let window else { return }
-        resizeObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResizeNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            self?.reportWidth()
-        }
-        reportWidth()
-    }
-
-    func reportWidth() {
-        guard let width = window?.frame.width else { return }
-        DispatchQueue.main.async { [weak self] in
-            self?.onChange?(width)
-        }
-    }
-
-    private func stopObserving() {
-        if let resizeObserver {
-            NotificationCenter.default.removeObserver(resizeObserver)
-        }
-        resizeObserver = nil
-    }
-
-    deinit {
-        if let resizeObserver {
-            NotificationCenter.default.removeObserver(resizeObserver)
-        }
-    }
-}
-
 /// SwiftUI can draw into a full-size title bar while AppKit's toolbar remains
 /// above it in the window hierarchy. This host preserves SwiftUI's layout with
 /// an invisible marker, then constrains the interactive content directly to
@@ -424,6 +366,7 @@ struct TitlebarInteractiveHost<Content: View>: NSViewRepresentable {
         private weak var marker: TitlebarInteractiveMarkerView?
         private weak var observedWindow: NSWindow?
         private var windowResizeObserver: NSObjectProtocol?
+        private var windowTransitionObservers: [NSObjectProtocol] = []
         private var layoutObservers: [NSObjectProtocol] = []
 
         init(content: Content) {
@@ -498,6 +441,24 @@ struct TitlebarInteractiveHost<Content: View>: NSViewRepresentable {
             ) { [weak self] _ in
                 self?.scheduleOverlayFrameUpdate()
             }
+            for name in [
+                NSWindow.didEnterFullScreenNotification,
+                NSWindow.didExitFullScreenNotification,
+            ] {
+                windowTransitionObservers.append(
+                    NotificationCenter.default.addObserver(
+                        forName: name,
+                        object: window,
+                        queue: .main
+                    ) { [weak self] _ in
+                        // AppKit replaces NSThemeFrame during native full-screen
+                        // transitions. Move the live controls to the final frame;
+                        // leaving them in the obsolete frame renders correctly
+                        // but no longer receives real mouse events.
+                        self?.scheduleOverlayReinstallationThroughTransition()
+                    }
+                )
+            }
         }
 
         private func stopObservingWindow() {
@@ -505,6 +466,10 @@ struct TitlebarInteractiveHost<Content: View>: NSViewRepresentable {
                 NotificationCenter.default.removeObserver(windowResizeObserver)
             }
             windowResizeObserver = nil
+            for observer in windowTransitionObservers {
+                NotificationCenter.default.removeObserver(observer)
+            }
+            windowTransitionObservers.removeAll()
             observedWindow = nil
             stopObservingLayoutChain()
         }
@@ -559,14 +524,75 @@ struct TitlebarInteractiveHost<Content: View>: NSViewRepresentable {
             }
         }
 
+        private func scheduleOverlayReinstallationThroughTransition() {
+            // `didEnter/ExitFullScreen` can arrive while AppKit is still
+            // swapping the last NSThemeFrame. Re-resolve the frame hierarchy
+            // through the tail of that transition, not just on its first
+            // notification, so the visible control remains hit-testable.
+            for delay in [0.0, 0.05, 0.15, 0.35, 0.75] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    self?.reinstallHostingView()
+                }
+            }
+        }
+
+        private func reinstallHostingView() {
+            guard let marker,
+                  let window = marker.window,
+                  let windowFrameView = window.contentView?.superview else {
+                installHostingView()
+                return
+            }
+
+            // Full-screen swaps and reorders AppKit's private title-bar views.
+            // Merely updating this overlay's frame can leave it visible while
+            // another title-bar host wins hit testing. Reinsert the live host
+            // above the reconstructed hierarchy so drawing and mouse routing
+            // agree after either direction of the transition.
+            hostingView.removeFromSuperview()
+            windowFrameView.addSubview(hostingView, positioned: .above, relativeTo: nil)
+            hostingView.translatesAutoresizingMaskIntoConstraints = true
+            hostingView.invalidateIntrinsicContentSize()
+            marker.invalidateIntrinsicContentSize()
+            observeWindowIfNeeded(window)
+            observeLayoutChain(from: marker, through: windowFrameView)
+            updateOverlayFrame()
+        }
+
         private func updateOverlayFrame() {
             guard let marker,
                   let window = marker.window,
                   let windowFrameView = window.contentView?.superview,
                   hostingView.superview === windowFrameView else { return }
-            let markerAnchorFrame = marker.convert(marker.bounds, to: windowFrameView)
+            // The hosted control lives above NSThemeFrame so it can receive
+            // clicks in the title bar, which also means it does not inherit the
+            // split view's clipping. During a sidebar collapse/expand AppKit
+            // clips the marker before SwiftUI updates columnVisibility. Hide
+            // the detached host as soon as any part of its marker is clipped;
+            // otherwise it floats over the detail pane for the final animation
+            // frame (and flashes there briefly in the reverse transition).
             let fittingSize = hostingView.fittingSize
             guard fittingSize.width > 0, fittingSize.height > 0 else { return }
+            // The representable marker can be wider than the compact hosted
+            // control. `updateOverlayFrame` anchors the control to the marker's
+            // trailing edge, so test that exact slice rather than requiring the
+            // marker's unused leading area to be visible.
+            let hostedSliceInMarker = NSRect(
+                x: marker.bounds.maxX - fittingSize.width,
+                y: marker.bounds.minY,
+                width: fittingSize.width,
+                height: marker.bounds.height
+            )
+            let visibleHostedSlice = marker.visibleRect.intersection(hostedSliceInMarker)
+            let markerIsFullyVisible = !marker.isHidden
+                && marker.alphaValue > 0.001
+                && marker.bounds.width > 0
+                && marker.bounds.height > 0
+                && visibleHostedSlice.width >= fittingSize.width - 0.5
+            hostingView.isHidden = !markerIsFullyVisible
+            guard markerIsFullyVisible else { return }
+
+            let markerAnchorFrame = marker.convert(marker.bounds, to: windowFrameView)
             var markerFrame = NSRect(
                 x: markerAnchorFrame.maxX - fittingSize.width,
                 y: markerAnchorFrame.minY,

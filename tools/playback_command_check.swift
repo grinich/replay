@@ -30,18 +30,32 @@ struct PlaybackCommandCheck {
         let playingChapterSeek = PlayerSeekRequest(time: 120, shouldPlay: true)
         precondition(!pausedChapterSeek.shouldPlay)
         precondition(playingChapterSeek.shouldPlay)
+        precondition(abs(PlayerVolumeScrollPolicy.adjustment(
+            deltaX: 0,
+            deltaY: 0.5,
+            isPrecise: true,
+            isMomentum: false
+        ) - 0.0005) < 0.000_001)
         precondition(PlayerVolumeScrollPolicy.adjustment(
             deltaX: 0,
             deltaY: 10,
             isPrecise: true,
             isMomentum: false
-        ) == 0.06)
+        ) == 0.01)
+        precondition(PlayerVolumeScrollPolicy.adjustment(
+            deltaX: 0,
+            deltaY: 100,
+            isPrecise: true,
+            isMomentum: false
+        ) == 0.015)
+        precondition(PlayerVolumeScrollDirection.scale(isDirectionInvertedFromDevice: false) == 1)
+        precondition(PlayerVolumeScrollDirection.scale(isDirectionInvertedFromDevice: true) == -1)
         precondition(PlayerVolumeScrollPolicy.adjustment(
             deltaX: 0,
             deltaY: -1,
             isPrecise: false,
             isMomentum: false
-        ) == -0.05)
+        ) == -0.02)
         precondition(PlayerVolumeScrollPolicy.adjustment(
             deltaX: 0,
             deltaY: 10,
@@ -64,7 +78,7 @@ struct PlaybackCommandCheck {
             phase: .changed,
             momentumPhase: []
         ))
-        precondition(!PlayerVolumeScrollEventPolicy.shouldAdjust(
+        precondition(PlayerVolumeScrollEventPolicy.shouldAdjust(
             isPrecise: true,
             phase: [],
             momentumPhase: []
@@ -78,6 +92,16 @@ struct PlaybackCommandCheck {
             isPrecise: true,
             phase: [],
             momentumPhase: .changed
+        ))
+        precondition(!PlayerVolumeScrollEventPolicy.shouldAdjust(
+            isPrecise: true,
+            phase: .changed,
+            momentumPhase: .began
+        ))
+        precondition(!PlayerVolumeScrollEventPolicy.shouldAdjust(
+            isPrecise: false,
+            phase: [],
+            momentumPhase: .ended
         ))
         precondition(PlayerVolumeScrollEventPolicy.shouldAdjust(
             isPrecise: false,
@@ -109,6 +133,46 @@ struct PlaybackCommandCheck {
         precondition(HardwareMediaKeyEventPolicy.action(subtype: 8, data1: mediaKeyUp) == nil)
         precondition(HardwareMediaKeyEventPolicy.action(subtype: 8, data1: mediaKeyRepeat) == nil)
         precondition(HardwareMediaKeyEventPolicy.action(subtype: 0, data1: mediaKeyDown) == nil)
+        precondition(SystemMediaCommandDeduplicationPolicy.shouldAccept(
+            previousSource: nil,
+            previousFamily: nil,
+            previousTime: nil,
+            source: .hardwareKey,
+            family: .playback,
+            time: 10
+        ))
+        precondition(!SystemMediaCommandDeduplicationPolicy.shouldAccept(
+            previousSource: .hardwareKey,
+            previousFamily: .playback,
+            previousTime: 10,
+            source: .remoteCommandCenter,
+            family: .playback,
+            time: 10.2
+        ))
+        precondition(SystemMediaCommandDeduplicationPolicy.shouldAccept(
+            previousSource: .hardwareKey,
+            previousFamily: .playback,
+            previousTime: 10,
+            source: .hardwareKey,
+            family: .playback,
+            time: 10.2
+        ))
+        precondition(SystemMediaCommandDeduplicationPolicy.shouldAccept(
+            previousSource: .hardwareKey,
+            previousFamily: .playback,
+            previousTime: 10,
+            source: .remoteCommandCenter,
+            family: .skipForward,
+            time: 10.2
+        ))
+        precondition(SystemMediaCommandDeduplicationPolicy.shouldAccept(
+            previousSource: .hardwareKey,
+            previousFamily: .playback,
+            previousTime: 10,
+            source: .remoteCommandCenter,
+            family: .playback,
+            time: 10.5
+        ))
         precondition(!PictureInPicturePolicy.shouldStart(
             isAppActive: true,
             isPlaying: true,

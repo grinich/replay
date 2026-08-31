@@ -16,6 +16,10 @@ compile_and_run url_intake \
     "$project_dir/Sources/Replay/URLIntake.swift" \
     "$project_dir/tools/url_intake_check.swift"
 
+compile_and_run youtube_preview \
+    "$project_dir/Sources/Replay/YouTubePreview.swift" \
+    "$project_dir/tools/youtube_preview_check.swift"
+
 compile_and_run retry_policy \
     "$project_dir/Sources/Replay/DownloadRetryPolicy.swift" \
     "$project_dir/tools/retry_policy_check.swift"
@@ -34,6 +38,7 @@ compile_and_run power_mode \
     "$project_dir/tools/power_mode_check.swift"
 
 compile_and_run playback_command \
+    "$project_dir/Sources/Replay/WatchItem.swift" \
     "$project_dir/Sources/Replay/LocalVideoPlayer.swift" \
     "$project_dir/tools/playback_command_check.swift"
 
