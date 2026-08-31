@@ -15,7 +15,7 @@ jobs:
     runs-on: macos-26
     env:
       SIGNING_IDENTITY: "Developer ID Application: Michael Grinich (${{ secrets.APPLE_TEAM_ID }})"
-      RELEASE_KEYCHAIN: ${{ runner.temp }}/replay-release.keychain-db
+      RELEASE_KEYCHAIN_NAME: replay-release.keychain-db
       RELEASE_KEYCHAIN_PASSWORD: replay-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
@@ -31,12 +31,14 @@ jobs:
         run: |
           test -n "$DEVELOPER_ID_P12_BASE64"
           test -n "$DEVELOPER_ID_P12_PASSWORD"
+          release_keychain="$RUNNER_TEMP/$RELEASE_KEYCHAIN_NAME"
+          echo "RELEASE_KEYCHAIN=$release_keychain" >> "$GITHUB_ENV"
           printf '%s' "$DEVELOPER_ID_P12_BASE64" | base64 -D > "$RUNNER_TEMP/developer-id.p12"
-          security create-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$RELEASE_KEYCHAIN"
-          security unlock-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
+          security create-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$release_keychain"
+          security set-keychain-settings -lut 21600 "$release_keychain"
+          security unlock-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$release_keychain"
           security import "$RUNNER_TEMP/developer-id.p12" \
-            -k "$RELEASE_KEYCHAIN" \
+            -k "$release_keychain" \
             -P "$DEVELOPER_ID_P12_PASSWORD" \
             -T /usr/bin/codesign \
             -T /usr/bin/security
@@ -44,9 +46,9 @@ jobs:
             -S apple-tool:,apple: \
             -s \
             -k "$RELEASE_KEYCHAIN_PASSWORD" \
-            "$RELEASE_KEYCHAIN"
-          security list-keychains -d user -s "$RELEASE_KEYCHAIN"
-          security find-identity -v -p codesigning "$RELEASE_KEYCHAIN" | grep -F "$SIGNING_IDENTITY"
+            "$release_keychain"
+          security list-keychains -d user -s "$release_keychain"
+          security find-identity -v -p codesigning "$release_keychain" | grep -F "$SIGNING_IDENTITY"
       - name: Store notarization credentials
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
