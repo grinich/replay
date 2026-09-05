@@ -24,6 +24,12 @@ compile_and_run retry_policy \
     "$project_dir/Sources/Replay/DownloadRetryPolicy.swift" \
     "$project_dir/tools/retry_policy_check.swift"
 
+compile_and_run browser_auth \
+    "$project_dir/Sources/Replay/DownloadAuthentication.swift" \
+    "$project_dir/tools/browser_auth_check.swift"
+
+"$project_dir/scripts/test_browser_auth_engine.sh"
+
 compile_and_run resume_model \
     "$project_dir/Sources/Replay/WatchItem.swift" \
     "$project_dir/Sources/Replay/ChapterMetadata.swift" \

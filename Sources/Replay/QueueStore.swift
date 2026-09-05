@@ -63,6 +63,11 @@ final class QueueStore: ObservableObject {
     @Published var selection: UUID?
     @Published var lastIntakeError: String?
     @Published private(set) var intakeNotice: IntakeNotice?
+    @Published var authenticationBrowser = BrowserAuthentication.browser() {
+        didSet {
+            UserDefaults.standard.set(authenticationBrowser.rawValue, forKey: BrowserAuthentication.preferenceKey)
+        }
+    }
     @Published private var progressivePlaybackSources: [UUID: VideoPlaybackSource] = [:]
 
     private let downloader = DownloadEngine()
@@ -306,6 +311,30 @@ final class QueueStore: ObservableObject {
         noticeDismissal?.cancel()
         noticeDismissal = nil
         intakeNotice = nil
+    }
+
+    var hasRetryableFailedDownloads: Bool {
+        items.contains {
+            $0.state == .failed && DownloadFailureKind.classify($0.errorMessage ?? "") != .noVideo
+        }
+    }
+
+    func retryFailedDownloads() {
+        // Snapshot IDs before startDownload changes the queue. It continues to
+        // enforce the normal concurrency, network, and Low Power Mode limits.
+        let failedIDs = items.filter {
+            $0.state == .failed && DownloadFailureKind.classify($0.errorMessage ?? "") != .noVideo
+        }.map(\.id)
+        failedIDs.forEach { startDownload(for: $0) }
+    }
+
+    func authenticateAndRetry(_ id: UUID, using browser: DownloadBrowser) {
+        guard browser != .none,
+              let item = item(with: id), item.state == .failed,
+              let url = URL(string: item.urlString),
+              BrowserAuthentication.supports(url) else { return }
+        authenticationBrowser = browser
+        startDownload(for: id)
     }
 
     func startDownload(for id: UUID) {
@@ -607,6 +636,20 @@ final class QueueStore: ObservableObject {
     private func handleDownloadFailure(_ error: Error, for id: UUID) {
         guard item(with: id) != nil else { return }
         let message = error.localizedDescription
+        let failure = DownloadFailureKind.classify(message)
+        if failure != .other {
+            // Authentication and missing-media errors require user action;
+            // repeating the same request will not repair them.
+            cancelRecovery(for: id)
+            progressivePlaybackSources.removeValue(forKey: id)
+            update(id) {
+                $0.state = .failed
+                $0.progressLabel = failure.progressLabel
+                $0.errorMessage = message
+            }
+            save()
+            return
+        }
         let networkFailure = DownloadRetryPolicy.isNetworkFailure(
             message: message,
             isOnline: networkMonitor.isOnline

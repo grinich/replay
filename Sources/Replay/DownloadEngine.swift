@@ -94,13 +94,21 @@ final class DownloadEngine {
         onEvent: @escaping (Event) -> Void,
         completion: @escaping (Swift.Result<DownloadEngine.Result, Error>) -> Void
     ) {
+        let browser = BrowserAuthentication.browser()
+        let authenticationArguments = BrowserAuthentication.arguments(for: sourceURL, browser: browser)
         // Resolve a directly playable source independently of the offline
         // download. The direct combined stream can start without waiting for
         // yt-dlp to finish downloading and merging the high-quality local copy.
-        playbackQueue.async { [weak self] in
-            guard let self,
-                  let source = try? self.resolvePlaybackSource(sourceURL: sourceURL) else { return }
-            onEvent(.playbackSource(source))
+        // Browser-authenticated downloads skip this optional resolver: the
+        // Android client cannot use cookies, and a second simultaneous cookie
+        // read can trigger a second Keychain prompt. Playback becomes available
+        // when the authenticated offline download finishes.
+        if authenticationArguments.isEmpty {
+            playbackQueue.async { [weak self] in
+                guard let self,
+                      let source = try? self.resolvePlaybackSource(sourceURL: sourceURL) else { return }
+                onEvent(.playbackSource(source))
+            }
         }
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -146,6 +154,7 @@ final class DownloadEngine {
                 if let deno = self.findTool(named: "deno") {
                     arguments += ["--js-runtimes", "deno:\(deno.path)"]
                 }
+                arguments += authenticationArguments
                 arguments.append(sourceURL.absoluteString)
                 process.arguments = arguments
 
@@ -292,6 +301,8 @@ final class DownloadEngine {
         sourceURL: URL,
         completion: @escaping (Swift.Result<Metadata, Error>) -> Void
     ) {
+        let browser = BrowserAuthentication.browser()
+        let authenticationArguments = BrowserAuthentication.arguments(for: sourceURL, browser: browser)
         metadataQueue.async { [weak self] in
             guard let self else { return }
             do {
@@ -312,6 +323,7 @@ final class DownloadEngine {
                 if let deno = self.findTool(named: "deno") {
                     arguments += ["--js-runtimes", "deno:\(deno.path)"]
                 }
+                arguments += authenticationArguments
                 arguments.append(sourceURL.absoluteString)
                 process.arguments = arguments
 
@@ -350,6 +362,8 @@ final class DownloadEngine {
         sourceURL: URL,
         completion: @escaping (Swift.Result<Preview, Error>) -> Void
     ) {
+        let browser = BrowserAuthentication.browser()
+        let authenticationArguments = BrowserAuthentication.arguments(for: sourceURL, browser: browser)
         previewQueue.async { [weak self] in
             guard let self else { return }
             if URLIntake.youtubeVideoID(from: sourceURL) != nil,
@@ -386,6 +400,7 @@ final class DownloadEngine {
                 if let deno = self.findTool(named: "deno") {
                     arguments += ["--js-runtimes", "deno:\(deno.path)"]
                 }
+                arguments += authenticationArguments
                 arguments.append(sourceURL.absoluteString)
                 process.arguments = arguments
 
@@ -491,6 +506,8 @@ final class DownloadEngine {
         destination: URL,
         completion: @escaping (Swift.Result<URL?, Error>) -> Void
     ) {
+        let browser = BrowserAuthentication.browser()
+        let authenticationArguments = BrowserAuthentication.arguments(for: sourceURL, browser: browser)
         metadataQueue.async { [weak self] in
             guard let self else { return }
             do {
@@ -517,6 +534,7 @@ final class DownloadEngine {
                 if let deno = self.findTool(named: "deno") {
                     arguments += ["--js-runtimes", "deno:\(deno.path)"]
                 }
+                arguments += authenticationArguments
                 arguments.append(sourceURL.absoluteString)
                 process.arguments = arguments
 
@@ -539,6 +557,8 @@ final class DownloadEngine {
         destination: URL,
         completion: @escaping (Swift.Result<URL?, Error>) -> Void
     ) {
+        let browser = BrowserAuthentication.browser()
+        let authenticationArguments = BrowserAuthentication.arguments(for: sourceURL, browser: browser)
         metadataQueue.async { [weak self] in
             guard let self else { return }
             do {
@@ -569,6 +589,7 @@ final class DownloadEngine {
                 if let deno = self.findTool(named: "deno") {
                     arguments += ["--js-runtimes", "deno:\(deno.path)"]
                 }
+                arguments += authenticationArguments
                 arguments.append(sourceURL.absoluteString)
                 process.arguments = arguments
 

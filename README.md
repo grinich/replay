@@ -53,7 +53,16 @@ New items download in the background and are stored locally for offline playback
 - Queue reordering, inline renaming, watched archive, thumbnails, and batch URL extraction
 - 10-second seek controls, keyboard shortcuts, media-key support, fullscreen, AirPlay, and a compact background player
 - Automatic retry after transient network failures and pause-on-Low-Power-Mode behavior
+- Optional YouTube sign-in through your browser, with a retry action for blocked downloads
 - No autoplay after a download or relaunch
+
+## YouTube sign-in
+
+If YouTube asks you to sign in or confirm you are not a bot, choose **Choose Browser & Retry…** on the failed video. Select a browser where you are already signed into YouTube and confirm the retry. You can also manage this choice from **Replay → YouTube Sign-In…** and retry eligible failures with **Replay → Retry Failed Downloads**.
+
+Browser authentication is off by default and applies only to YouTube. Replay passes the selected browser to yt-dlp for downloads, captions, thumbnails, and metadata requests. It reads the browser session locally and uses matching cookies to authenticate to YouTube; Replay saves only your browser choice, without exporting a cookie file. macOS may ask you to allow access to the browser's Keychain item. If you use multiple profiles, yt-dlp uses its default profile selection for that browser.
+
+Choose **Off** in YouTube Sign-In to turn this off for new requests. If authentication still fails, open the video in that browser, sign in or complete YouTube's check, then retry. Sign-in and browser-access failures wait for your action instead of repeatedly retrying. A post without an attached video is reported separately and skipped by **Retry Failed Downloads**.
 
 ## Keyboard and trackpad
 
@@ -77,7 +86,7 @@ The release also bundles a portable ffmpeg build for merging separate video and 
 - Downloaded media: `~/Movies/Replay`
 - Queue metadata: `~/Library/Application Support/Replay/queue.json`
 - No analytics, accounts, or cloud sync
-- No browser-cookie import
+- Optional local browser-session access for YouTube; disabled by default, with no exported cookie file
 - No DRM decryption
 
 Use Replay only for media you are authorized to download. Site terms and copyright rules still apply.

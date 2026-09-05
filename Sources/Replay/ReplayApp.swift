@@ -5,12 +5,17 @@ import SwiftUI
 struct ReplayApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = QueueStore()
+    @State private var isBrowserAuthenticationPresented = false
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(store)
                 .environmentObject(appDelegate.inbox)
+                .sheet(isPresented: $isBrowserAuthenticationPresented) {
+                    BrowserAuthenticationView(browser: store.authenticationBrowser)
+                        .environmentObject(store)
+                }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     store.flushPendingSaves()
                 }
@@ -20,14 +25,19 @@ struct ReplayApp: App {
         .defaultSize(width: 1320, height: 820)
         .commands {
             CommandGroup(replacing: .newItem) { }
-            ReplayCommands(updater: appDelegate.updater, store: store)
+            ReplayCommands(
+                updater: appDelegate.updater,
+                store: store,
+                isBrowserAuthenticationPresented: $isBrowserAuthenticationPresented
+            )
         }
     }
 }
 
 private struct ReplayCommands: Commands {
     @ObservedObject var updater: AppUpdater
-    let store: QueueStore
+    @ObservedObject var store: QueueStore
+    @Binding var isBrowserAuthenticationPresented: Bool
 
     var body: some Commands {
         CommandGroup(after: .appInfo) {
@@ -35,6 +45,11 @@ private struct ReplayCommands: Commands {
                 updater.performMenuAction()
             }
             .disabled(!updater.menuItemIsEnabled)
+
+            Divider()
+            Button("YouTube Sign-In…") { isBrowserAuthenticationPresented = true }
+            Button("Retry Failed Downloads") { store.retryFailedDownloads() }
+                .disabled(!store.hasRetryableFailedDownloads)
 
             Divider()
             Button("Show Downloads Folder") { store.revealMediaFolder() }

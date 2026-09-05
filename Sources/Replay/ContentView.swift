@@ -7,6 +7,7 @@ struct ContentView: View {
     @EnvironmentObject private var inbox: URLInbox
     @State private var isDropTarget = false
     @State private var itemToDelete: WatchItem?
+    @State private var itemForBrowserAuthentication: WatchItem?
     @State private var detailSelection: UUID?
     @State private var knownItemIDs: Set<UUID> = []
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -70,6 +71,10 @@ struct ContentView: View {
             Button("OK", role: .cancel) { store.lastIntakeError = nil }
         } message: {
             Text(store.lastIntakeError ?? "Unknown error")
+        }
+        .sheet(item: $itemForBrowserAuthentication) { item in
+            BrowserAuthenticationView(browser: store.authenticationBrowser, retryItemID: item.id)
+                .environmentObject(store)
         }
         .confirmationDialog(
             "Remove this video?",
@@ -272,7 +277,12 @@ struct ContentView: View {
                 store.toggleWatched(item.id)
             }
             if item.state == .failed {
-                Button("Retry Download") { store.startDownload(for: item.id) }
+                if needsBrowserAuthentication(for: item) {
+                    Button("Choose Browser & Retry…") { itemForBrowserAuthentication = item }
+                } else if DownloadFailureKind.classify(item.errorMessage ?? "") != .noVideo {
+                    Button("Retry Download") { store.startDownload(for: item.id) }
+                }
+                Button("Show Log") { store.openDownloadLog(for: item.id) }
             }
             Button("Open Original") { store.openOriginal(item.id) }
             if item.localFileURL != nil {
@@ -594,7 +604,7 @@ private struct QueueRow: View, Equatable {
                 ? "Resume \(formatTime(item.resumablePosition))"
                 : "Saved offline"
         case .failed:
-            return item.progressLabel
+            return downloadFailureTitle(for: item)
         }
     }
 
@@ -798,12 +808,17 @@ private struct VideoDetail: View {
     @State private var volumeHUDValue = PlaybackVolumePreference.load()
     @State private var volumeHUDVisible = false
     @State private var volumeHUDDismissalTask: Task<Void, Never>?
+    @State private var isBrowserAuthenticationPresented = false
     let item: WatchItem
     let sidebarCollapsed: Bool
 
     var body: some View {
         detailBody
             .navigationTitle("")
+            .sheet(isPresented: $isBrowserAuthenticationPresented) {
+                BrowserAuthenticationView(browser: store.authenticationBrowser, retryItemID: item.id)
+                    .environmentObject(store)
+            }
     }
 
     private var detailBody: some View {
@@ -1126,7 +1141,7 @@ private struct VideoDetail: View {
                     .font(.system(size: 38, weight: .light))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(.white)
-                Text(item.state == .failed ? "Download failed" : "Saving for offline")
+                Text(item.state == .failed ? downloadFailureTitle(for: item) : "Saving for offline")
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(.white)
                 if item.state == .downloading {
@@ -1137,18 +1152,13 @@ private struct VideoDetail: View {
                         .font(.callout)
                         .foregroundStyle(.white.opacity(0.68))
                 } else if item.state == .failed {
-                    Text(item.errorMessage ?? "Unknown download error")
+                    Text(downloadFailureMessage(for: item))
                         .font(.callout)
                         .foregroundStyle(.white.opacity(0.68))
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 520)
                         .textSelection(.enabled)
-                    HStack(spacing: 10) {
-                        Button("Show Log") { store.openDownloadLog(for: item.id) }
-                            .watchGlassButton()
-                        Button("Retry Download") { store.startDownload(for: item.id) }
-                            .watchGlassButton(prominent: true)
-                    }
+                    failureActions
                 } else {
                     ProgressView()
                         .controlSize(.large)
@@ -1159,8 +1169,42 @@ private struct VideoDetail: View {
         }
     }
 
+    private var failureKind: DownloadFailureKind {
+        DownloadFailureKind.classify(item.errorMessage ?? "")
+    }
+
+    @ViewBuilder
+    private var failureActions: some View {
+        if needsBrowserAuthentication(for: item) {
+            VStack(spacing: 10) {
+                Button("Choose Browser & Retry…") { isBrowserAuthenticationPresented = true }
+                    .watchGlassButton(prominent: true)
+                HStack(spacing: 10) {
+                    Button("Open YouTube") { store.openOriginal(item.id) }
+                        .watchGlassButton()
+                    Button("Show Log") { store.openDownloadLog(for: item.id) }
+                        .watchGlassButton()
+                }
+            }
+        } else {
+            HStack(spacing: 10) {
+                Button("Show Log") { store.openDownloadLog(for: item.id) }
+                    .watchGlassButton()
+                if failureKind == .noVideo || failureKind == .authenticationRequired || failureKind == .browserAccess {
+                    Button("Open Original") { store.openOriginal(item.id) }
+                        .watchGlassButton(prominent: true)
+                } else {
+                    Button("Retry Download") { store.startDownload(for: item.id) }
+                        .watchGlassButton(prominent: true)
+                }
+            }
+        }
+    }
+
     private var stateIcon: String {
-        item.state == .failed ? "exclamationmark.triangle.fill" : "arrow.down.circle.fill"
+        guard item.state == .failed else { return "arrow.down.circle.fill" }
+        if needsBrowserAuthentication(for: item) { return "person.crop.circle.badge.exclamationmark" }
+        return failureKind == .noVideo ? "video.slash" : "exclamationmark.triangle.fill"
     }
 
     private func seekToChapter(_ chapter: VideoChapter) {
@@ -1178,6 +1222,29 @@ private struct VideoDetail: View {
             chaptersPresented.toggle()
         }
     }
+}
+
+private func needsBrowserAuthentication(for item: WatchItem) -> Bool {
+    guard let sourceURL = URL(string: item.urlString), BrowserAuthentication.supports(sourceURL) else { return false }
+    let failure = DownloadFailureKind.classify(item.errorMessage ?? "")
+    return failure == .authenticationRequired || failure == .browserAccess
+}
+
+private func downloadFailureTitle(for item: WatchItem) -> String {
+    let failure = DownloadFailureKind.classify(item.errorMessage ?? "")
+    if !needsBrowserAuthentication(for: item) {
+        if failure == .authenticationRequired { return "Sign-in required" }
+        if failure == .browserAccess { return "Access required" }
+    }
+    return failure.title
+}
+
+private func downloadFailureMessage(for item: WatchItem) -> String {
+    let failure = DownloadFailureKind.classify(item.errorMessage ?? "")
+    if !needsBrowserAuthentication(for: item), failure == .authenticationRequired || failure == .browserAccess {
+        return "Open the original page to check that you have access to this video."
+    }
+    return failure.message
 }
 
 private struct DetailBackdrop: View, Equatable {
