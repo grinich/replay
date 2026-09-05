@@ -1,6 +1,5 @@
 import AppKit
 import CryptoKit
-import Darwin
 import Foundation
 
 private enum CheckError: Error, CustomStringConvertible {
@@ -28,29 +27,51 @@ private func run(_ executable: String, _ arguments: [String]) throws {
     }
 }
 
-private func availablePort() throws -> Int {
-    let descriptor = socket(AF_INET, SOCK_STREAM, 0)
-    guard descriptor >= 0 else { throw CheckError.failed("Could not create test socket") }
-    defer { close(descriptor) }
-    var address = sockaddr_in()
-    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-    address.sin_family = sa_family_t(AF_INET)
-    address.sin_port = 0
-    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
-    let bindResult = withUnsafePointer(to: &address) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+private func serverFailure(_ message: String, server: Process, logURL: URL) -> CheckError {
+    let status = server.isRunning ? "running" : "exited with status \(server.terminationStatus)"
+    let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? "No server output"
+    return .failed("\(message) (server \(status))\n\(log)")
+}
+
+private func waitForServerPort(_ server: Process, in root: URL, logURL: URL) async throws -> Int {
+    let portURL = root.appendingPathComponent("server-port.txt")
+    let deadline = Date().addingTimeInterval(15)
+    while Date() < deadline {
+        guard server.isRunning else {
+            throw serverFailure("Fixture HTTP server stopped during startup", server: server, logURL: logURL)
         }
-    }
-    guard bindResult == 0 else { throw CheckError.failed("Could not bind test socket") }
-    var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-    let nameResult = withUnsafeMutablePointer(to: &address) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            getsockname(descriptor, $0, &length)
+        if let value = try? String(contentsOf: portURL, encoding: .utf8),
+           let port = Int(value.trimmingCharacters(in: .whitespacesAndNewlines)),
+           (1...65535).contains(port) {
+            return port
         }
+        try await Task.sleep(nanoseconds: 50_000_000)
     }
-    guard nameResult == 0 else { throw CheckError.failed("Could not inspect test socket") }
-    return Int(UInt16(bigEndian: address.sin_port))
+    throw serverFailure("Timed out waiting for fixture HTTP server to bind", server: server, logURL: logURL)
+}
+
+private func waitForServerResponse(
+    _ server: Process, at url: URL, expectedData: Data, logURL: URL
+) async throws {
+    let deadline = Date().addingTimeInterval(15)
+    var lastError = "No response received"
+    while Date() < deadline {
+        guard server.isRunning else {
+            throw serverFailure("Fixture HTTP server stopped before readiness", server: server, logURL: logURL)
+        }
+        do {
+            var request = URLRequest(url: url)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.timeoutInterval = 1
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if (response as? HTTPURLResponse)?.statusCode == 200, data == expectedData { return }
+            lastError = "Unexpected response from fixture HTTP server"
+        } catch {
+            lastError = error.localizedDescription
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+    }
+    throw serverFailure("Fixture HTTP server was not ready: \(lastError)", server: server, logURL: logURL)
 }
 
 private func sha256(_ url: URL) throws -> String {
@@ -96,7 +117,35 @@ private struct UpdaterIntegrationCheck {
             let archiveURL = root.appendingPathComponent("Replay-macOS.zip")
             try run("/usr/bin/ditto", ["-c", "-k", "--keepParent", appURL.path, archiveURL.path])
             let checksum = try sha256(archiveURL)
-            let port = try availablePort()
+
+            let serverLogURL = root.appendingPathComponent("http-server.log")
+            fileManager.createFile(atPath: serverLogURL.path, contents: nil)
+            let serverLog = try FileHandle(forWritingTo: serverLogURL)
+            defer { try? serverLog.close() }
+            let httpServer = Process()
+            httpServer.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            // Let the server retain the OS-assigned port from bind through
+            // shutdown. Reserving and releasing a port before launching Python
+            // races other processes, and a fixed sleep races slow CI startup.
+            httpServer.arguments = ["-u", "-c", """
+            import functools
+            import http.server
+            import pathlib
+            import sys
+
+            root = pathlib.Path(sys.argv[1])
+            handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
+            with http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler) as server:
+                temporary = root / "server-port.tmp"
+                temporary.write_text(str(server.server_port))
+                temporary.replace(root / "server-port.txt")
+                server.serve_forever()
+            """, root.path]
+            httpServer.standardOutput = serverLog
+            httpServer.standardError = serverLog
+            try httpServer.run()
+            server = httpServer
+            let port = try await waitForServerPort(httpServer, in: root, logURL: serverLogURL)
             let release: [String: Any] = [
                 "tag_name": "v9.9.9",
                 "assets": [[
@@ -107,22 +156,12 @@ private struct UpdaterIntegrationCheck {
             ]
             let releaseData = try JSONSerialization.data(withJSONObject: release, options: [.prettyPrinted])
             try releaseData.write(to: root.appendingPathComponent("release.json"))
-
-            let httpServer = Process()
-            httpServer.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-            httpServer.arguments = [
-                "-m", "http.server", "--bind", "127.0.0.1",
-                String(port), "--directory", root.path
-            ]
-            httpServer.standardOutput = FileHandle.nullDevice
-            httpServer.standardError = FileHandle.nullDevice
-            try httpServer.run()
-            server = httpServer
-            try await Task.sleep(nanoseconds: 400_000_000)
+            let releaseURL = URL(string: "http://127.0.0.1:\(port)/release.json")!
+            try await waitForServerResponse(httpServer, at: releaseURL, expectedData: releaseData, logURL: serverLogURL)
 
             let updates = root.appendingPathComponent("Updates", isDirectory: true)
             let configuration = AppUpdater.Configuration(
-                releaseAPIURL: URL(string: "http://127.0.0.1:\(port)/release.json")!,
+                releaseAPIURL: releaseURL,
                 updatesDirectory: updates,
                 installedAppURL: root.appendingPathComponent("Installed/Replay.app"),
                 helperURL: root.appendingPathComponent("ReplayUpdater"),
@@ -130,10 +169,8 @@ private struct UpdaterIntegrationCheck {
                 currentVersion: UpdateVersion("1.0.0")!
             )
             let updater = AppUpdater(configuration: configuration)
-            // Exercise the silent automatic path. If the local HTTP server is
-            // a fraction late to accept connections, a manual check would
-            // display a modal NSAlert and hang this headless test instead of
-            // reporting the failure through `phase` below.
+            // Exercise the silent automatic path so failures are reported
+            // through `phase` instead of a modal alert in this headless test.
             updater.startAutomaticChecks()
 
             let deadline = Date().addingTimeInterval(20)
@@ -154,6 +191,7 @@ private struct UpdaterIntegrationCheck {
                         throw CheckError.failed("A staged update was not restored on the next launch")
                     }
                     server?.terminate()
+                    server?.waitUntilExit()
                     print("Updater integration checks passed")
                     return
                 }
@@ -164,7 +202,10 @@ private struct UpdaterIntegrationCheck {
             }
             throw CheckError.failed("Timed out waiting for staged update")
         } catch {
-            server?.terminate()
+            if server?.isRunning == true {
+                server?.terminate()
+                server?.waitUntilExit()
+            }
             fputs("Updater integration check failed: \(error)\n", stderr)
             exit(1)
         }
