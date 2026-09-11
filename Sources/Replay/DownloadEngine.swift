@@ -69,7 +69,7 @@ final class DownloadEngine {
                     "--no-color",
                     "--paths", destination.path,
                     "--output", "\(itemID.uuidString).%(ext)s",
-                    "--format", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/b[height<=1080]/best",
+                    "--format", "bv*[height<=1080][ext=mp4][protocol^=http]+ba[ext=m4a][protocol^=http]/b[height<=1080][ext=mp4][protocol^=http]/b[height<=1080]/best",
                     "--merge-output-format", "mp4",
                     "--write-thumbnail",
                     "--convert-thumbnails", "jpg",
