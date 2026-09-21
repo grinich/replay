@@ -118,6 +118,7 @@ struct BrowserAuthEngineCheck {
             engine.fetchMetadata(sourceURL: source, completion: callback.finish)
             let value = try callback.wait().get()
             try check(value.title == "Offline fixture" && value.duration == 12, "Metadata callback did not parse the fixture")
+            try check(value.chapters.map(\.startTime) == [0, 5], "Metadata refresh lost timestamp chapters")
         }
 
         func helpers(_ source: URL, previewSource: URL) throws {
@@ -144,6 +145,7 @@ struct BrowserAuthEngineCheck {
             try check(FileManager.default.fileExists(atPath: value.fileURL.path), "Success callback lost the movie")
             try check(value.thumbnailFileURL != nil && value.subtitleFileURL != nil, "Success callback lost sidecars")
             try events.checkDownloadEvents()
+            try check(value.metadata.chapters.map(\.title) == ["Intro", "Main topic"], "Completed download lost timestamp chapters")
             if authenticated {
                 try check(events.playback.wait(timeout: .now() + 0.25) == .timedOut, "Authenticated download started the Android resolver")
             } else {

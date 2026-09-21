@@ -1143,6 +1143,9 @@ struct LocalVideoPlayer: NSViewRepresentable {
         ) {
             playerItem.audioTimePitchAlgorithm = PlaybackAudioPolicy.timePitchAlgorithm
             let player = AVPlayer(playerItem: playerItem)
+            // macOS defaults this to false. Let AVPlayer keep the display awake
+            // only during video playback, including fullscreen and floating video.
+            player.preventsDisplaySleepDuringVideoPlayback = true
             player.allowsExternalPlayback = true
             player.automaticallyWaitsToMinimizeStalling = PlaybackAudioPolicy.waitsToMinimizeStalling
             player.volume = Float(PlaybackVolumePreference.load())

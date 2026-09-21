@@ -148,8 +148,8 @@ final class DownloadEngine {
                     "--convert-subs", "srt",
                     "--ffmpeg-location", ffmpeg.deletingLastPathComponent().path,
                     "--progress-template", "download:WL_PROGRESS\t%(progress._percent_str)s\t%(progress._speed_str)s\t%(progress._eta_str)s",
-                    "--print", "before_dl:WL_META\t%(title)j\t%(uploader)j\t%(duration)j\t%(chapters)j",
-                    "--print", "after_move:WL_DONE\t%(filepath)j\t%(title)j\t%(uploader)j\t%(duration)j\t%(chapters)j"
+                    "--print", "before_dl:WL_META\t%(title)j\t%(uploader)j\t%(duration)j\t%(chapters)j\t%(description)j",
+                    "--print", "after_move:WL_DONE\t%(filepath)j\t%(title)j\t%(uploader)j\t%(duration)j\t%(chapters)j\t%(description)j"
                 ]
                 if let deno = self.findTool(named: "deno") {
                     arguments += ["--js-runtimes", "deno:\(deno.path)"]
@@ -177,6 +177,7 @@ final class DownloadEngine {
                     duration: nil,
                     chapters: []
                 )
+                let fallbackDescription = self.postDescriptionFallback(for: sourceURL)
                 var finishedFile: URL?
                 var announcedSubtitleURL: URL?
 
@@ -190,6 +191,7 @@ final class DownloadEngine {
                     for line in lines.dropLast() {
                         self.parse(
                             line: line,
+                            fallbackDescription: fallbackDescription,
                             metadata: &latestMetadata,
                             finishedFile: &finishedFile,
                             recentLines: &recentLines,
@@ -206,6 +208,7 @@ final class DownloadEngine {
                 if !pending.isEmpty {
                     self.parse(
                         line: pending,
+                        fallbackDescription: fallbackDescription,
                         metadata: &latestMetadata,
                         finishedFile: &finishedFile,
                         recentLines: &recentLines,
@@ -318,7 +321,7 @@ final class DownloadEngine {
                     "--no-playlist",
                     "--skip-download",
                     "--no-color",
-                    "--print", "WL_META\t%(title)j\t%(uploader)j\t%(duration)j\t%(chapters)j"
+                    "--print", "WL_META\t%(title)j\t%(uploader)j\t%(duration)j\t%(chapters)j\t%(description)j"
                 ]
                 if let deno = self.findTool(named: "deno") {
                     arguments += ["--js-runtimes", "deno:\(deno.path)"]
@@ -340,11 +343,13 @@ final class DownloadEngine {
                     duration: nil,
                     chapters: []
                 )
+                let fallbackDescription = self.postDescriptionFallback(for: sourceURL)
                 var finishedFile: URL?
                 var recentLines: [String] = []
                 for line in String(decoding: data, as: UTF8.self).components(separatedBy: .newlines) {
                     self.parse(
                         line: line,
+                        fallbackDescription: fallbackDescription,
                         metadata: &metadata,
                         finishedFile: &finishedFile,
                         recentLines: &recentLines,
@@ -608,6 +613,7 @@ final class DownloadEngine {
 
     private func parse(
         line: String,
+        fallbackDescription: () -> String?,
         metadata: inout Metadata,
         finishedFile: inout URL?,
         recentLines: inout [String],
@@ -638,9 +644,16 @@ final class DownloadEngine {
             let title: String = fields.count > offset ? decodeJSON(fields[offset]) ?? metadata.title : metadata.title
             let author: String = fields.count > offset + 1 ? decodeJSON(fields[offset + 1]) ?? metadata.author : metadata.author
             let duration: Double? = fields.count > offset + 2 ? decodeJSON(fields[offset + 2]) : metadata.duration
-            let chapters = fields.count > offset + 3
-                ? ChapterMetadata.decode(json: fields[offset + 3]) ?? metadata.chapters
-                : metadata.chapters
+            let description: String? = fields.count > offset + 4 ? decodeJSON(fields[offset + 4]) : nil
+            var resolvedChapters = ChapterMetadata.resolve(
+                json: fields.count > offset + 3 ? fields[offset + 3] : "null",
+                description: description,
+                duration: duration
+            )
+            if resolvedChapters.isEmpty && metadata.chapters.isEmpty {
+                resolvedChapters = ChapterMetadata.parseTimestamps(in: fallbackDescription() ?? "", duration: duration)
+            }
+            let chapters = resolvedChapters.isEmpty ? metadata.chapters : resolvedChapters
             metadata = Metadata(title: title, author: author, duration: duration, chapters: chapters)
             onEvent(.metadata(metadata))
             return
@@ -650,6 +663,20 @@ final class DownloadEngine {
         if !trimmed.isEmpty {
             recentLines.append(trimmed)
             if recentLines.count > 30 { recentLines.removeFirst() }
+        }
+    }
+
+    /// Fetch at most once per operation, and only if the downloader omitted chapters.
+    private func postDescriptionFallback(for sourceURL: URL) -> () -> String? {
+        var attempted = false
+        var text: String?
+        return { [weak self] in
+            guard !attempted else { return text }
+            attempted = true
+            guard let self, let url = ChapterMetadata.publicPostURL(for: sourceURL),
+                  let data = self.fetchPreviewData(from: url, timeout: 8, maximumBytes: 2_000_000) else { return nil }
+            text = ChapterMetadata.publicPostText(from: data)
+            return text
         }
     }
 

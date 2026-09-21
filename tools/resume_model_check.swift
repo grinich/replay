@@ -39,6 +39,46 @@ struct ResumeModelCheck {
         precondition(chapters?.map(\.title) == ["Intro", "Setup"])
         precondition(chapters?.last?.startTime == 65.25)
 
+        let timestampList = """
+        0:00 Intro
+        0:53 Family History & Identity
+        7:03 Survival & Outsider Instinct
+        18:53 Studying Exceptional People
+        33:50 Self-Doubt & Success
+        41:17 Steve Jobs & Obsession
+        52:50 Joining Sequoia
+        1:03:22 Leadership & Alex Ferguson
+        1:08:25 Elon Musk & AI
+        1:17:12 Becoming Who You Are
+        """
+        let expectedTimes: [Double] = [0, 53, 423, 1133, 2030, 2477, 3170, 3802, 4105, 4632]
+        for separator in ["\n", "  "] {
+            let text = timestampList.components(separatedBy: "\n").joined(separator: separator)
+            let parsed = ChapterMetadata.resolve(json: "NA", description: text, duration: 5648.32)
+            precondition(parsed.map(\.startTime) == expectedTimes)
+            precondition(parsed[1].title == "Family History & Identity")
+            precondition(parsed[7].title == "Leadership & Alex Ferguson")
+            precondition(parsed.first?.endTime == 53 && parsed.last?.endTime == 5648.32)
+        }
+        let linked = timestampList.components(separatedBy: "\n").map { line -> String in
+            let parts = line.split(separator: " ", maxSplits: 1)
+            return "[\(parts[0])](https://x.com/patrick_oshag/status/2100213636706795949?t=0) \(parts[1])"
+        }.joined(separator: "  ")
+        precondition(ChapterMetadata.parseTimestamps(in: linked, duration: nil).map(\.startTime) == expectedTimes)
+        precondition(ChapterMetadata.resolve(json: chapterJSON, description: timestampList, duration: 600) == chapters!)
+        for invalid in ["Meet at 7:03 tomorrow", "0:00 Intro", "0:00 Intro\n0:99 Invalid", "1:00 Later\n0:00 Earlier", "0:00 Intro\n0:00 Duplicate"] {
+            precondition(ChapterMetadata.parseTimestamps(in: invalid, duration: nil).isEmpty)
+        }
+        let bounded = ChapterMetadata.parseTimestamps(in: "0:00 Intro\n0:30 Middle\n1:00 Beyond", duration: 60)
+        precondition(bounded.map(\.startTime) == [0, 30] && bounded.last?.endTime == 60)
+        let publicURL = ChapterMetadata.publicPostURL(for: URL(string: "https://x.com/patrick_oshag/status/2100213636706795949?t=53")!)
+        precondition(publicURL?.absoluteString == "https://api.fxtwitter.com/status/2100213636706795949")
+        precondition(ChapterMetadata.publicPostURL(for: URL(string: "https://notx.com/name/status/123")!) == nil)
+        let response = try JSONSerialization.data(withJSONObject: ["code": 200, "tweet": ["text": timestampList]])
+        precondition(ChapterMetadata.publicPostText(from: response) == timestampList)
+        precondition(ChapterMetadata.publicPostText(from: Data("{}".utf8)) == nil)
+
+
         var legacy = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
         legacy.removeValue(forKey: "playbackPosition")
         let legacyData = try JSONSerialization.data(withJSONObject: legacy)

@@ -48,7 +48,8 @@ New items download in the background and are stored locally for offline playback
 
 - Offline playback with a focused, distraction-free native player
 - Persistent resume position, playback speed, volume, subtitles, and chapter-pane state
-- YouTube creator chapters displayed in the timeline and a collapsible chapter inspector
+- YouTube creator chapters and timestamp lists from X posts displayed in the timeline and a collapsible chapter inspector
+  - When X metadata omits chapters, Replay can retrieve the public post text from FXTwitter using its post ID. This optional lookup uses no browser cookies; a failed lookup does not block the download.
 - Offline English subtitles when creator or automatic captions are available
 - Queue reordering, inline renaming, watched archive, thumbnails, and batch URL extraction
 - 10-second seek controls, keyboard shortcuts, media-key support, fullscreen, AirPlay, and a compact background player

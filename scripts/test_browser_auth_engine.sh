@@ -63,12 +63,12 @@ if [[ -n "$output" ]]; then
     $subtitle && printf '1\n00:00:00,000 --> 00:00:01,000\nFixture\n' > "$paths/$prefix.en.srt"
     if ! $skip_download; then
         : > "$paths/$prefix.mp4"
-        printf 'WL_META\t"Offline fixture"\t"Replay test"\t12\t[]\n'
+        printf 'WL_META\t"Offline fixture"\t"Replay test"\t12\t[]\t\"0:00 Intro\\n0:05 Main topic\"\n'
         printf 'WL_PROGRESS\t50%%\t1KiB/s\t00:01\n'
-        printf 'WL_DONE\t"%s"\t"Offline fixture"\t"Replay test"\t12\t[]\n' "$paths/$prefix.mp4"
+        printf 'WL_DONE\t"%s"\t"Offline fixture"\t"Replay test"\t12\t[]\t\"0:00 Intro\\n0:05 Main topic\"\n' "$paths/$prefix.mp4"
     fi
 else
-    printf 'WL_META\t"Offline fixture"\t"Replay test"\t12\t[]\n'
+    printf 'WL_META\t"Offline fixture"\t"Replay test"\t12\t[]\t\"0:00 Intro\\n0:05 Main topic\"\n'
 fi
 FAKE
 cat > "$tools_dir/ffmpeg" <<'FAKE'
